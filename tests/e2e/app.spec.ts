@@ -10,6 +10,19 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/');
   await expect(page.getByRole('heading', { name: '今天，我们一起完成什么？' })).toBeVisible();
+  const editor = page.getByRole('textbox', { name: '发送消息' });
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+  await editor.fill(
+    Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行：整理研究资料与主要观点。`).join('\n'),
+  );
+  await expect.poll(() => editor.evaluate((e) => e.clientHeight)).toBe(264);
+  await expect(editor).toHaveCSS('resize', 'none');
+  await page.screenshot({ path: 'test-results/composer-writing.png', fullPage: true });
+  await editor.fill('请整理研究资料');
+  await editor.press('Shift+Enter');
+  await expect(editor).toHaveValue('请整理研究资料\n');
+  await expect.poll(() => editor.evaluate((e) => e.clientHeight)).toBeLessThan(264);
+  await editor.fill('');
   await page.getByRole('button', { name: '连接模型' }).click();
   const supplier = page.getByLabel('服务商', { exact: true });
   await supplier.focus();
@@ -38,13 +51,14 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await page.getByLabel('项目说明').fill('比较主流产品的体验');
   await page.getByRole('button', { name: '保存项目' }).click();
   await page.getByRole('button', { name: '开始对话', exact: true }).click();
+  await page.getByRole('button', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '新建任务', exact: true }).click();
   await page.getByLabel('上传资料', { exact: true }).setInputFiles({
     name: '需求.md',
     mimeType: 'text/markdown',
     buffer: Buffer.from('# 需求\n这是用户上传的资料。'),
   });
   await expect(page.locator('.attachments')).toContainText('需求.md');
-  await select(page, '工作模式', 'task');
   await page.getByRole('textbox', { name: '发送消息' }).fill('请协作整理资料，生成报告');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.task-card .status')).toHaveText(/已完成/, { timeout: 20000 });
@@ -87,8 +101,12 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await page.getByRole('button', { name: '保存助手' }).click();
   await expect(page.getByRole('heading', { name: '文案助手' })).toBeVisible();
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.screenshot({ path: 'test-results/settings-book-models.png', fullPage: true });
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.getByText('连接成功，已获取模型列表')).toBeVisible();
+  await page.getByRole('tab', { name: '联网搜索', exact: true }).click();
+  await expect(page.getByRole('tabpanel')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '测试连接', exact: true })).toHaveCount(0);
   await select(page, '搜索服务', 'searxng');
   await page.getByLabel('搜索服务地址', { exact: true }).fill('http://127.0.0.1:3901');
   await page.getByLabel('启用联网搜索', { exact: true }).check();
@@ -115,6 +133,7 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   );
   await page.screenshot({ path: 'test-results/web-search.png', fullPage: true });
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: '阅读与外观', exact: true }).click();
   for (const theme of ['light', 'dark']) {
     await select(page, '显示模式', theme);
     await page.getByLabel('显示模式').click();
@@ -153,7 +172,8 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
     document.documentElement.dataset.theme = 'dark';
   });
   await page.screenshot({ path: 'test-results/home-dark.png', fullPage: true });
-  await select(page, '工作模式', 'task');
+  await page.getByRole('button', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '新建任务', exact: true }).click();
   await page.getByRole('textbox', { name: '发送消息' }).fill('慢任务，请整理资料');
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.task-card .status')).toHaveText(/进行中/);
@@ -161,6 +181,30 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await expect(page.locator('.task-card .status')).toHaveText(/已暂停/);
   await page.getByRole('button', { name: '继续', exact: true }).click();
   await expect(page.locator('.task-card .status')).toHaveText(/已完成/, { timeout: 20000 });
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'light';
+  });
+  await page.screenshot({ path: 'test-results/reading-conversation.png', fullPage: true });
+  for (const [label, slug] of [
+    ['任务', 'tasks'],
+    ['项目', 'projects'],
+    ['助手', 'assistants'],
+    ['文件', 'files'],
+  ]) {
+    await page.getByRole('button', { name: label, exact: true }).click();
+    await expect(page.locator('.page-title')).toBeVisible();
+    await page.screenshot({ path: `test-results/reading-${slug}.png`, fullPage: true });
+    await page.setViewportSize({ width: 375, height: 850 });
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await page.screenshot({
+      path: `test-results/reading-${slug}-mobile.png`,
+      fullPage: true,
+      animations: 'disabled',
+    });
+    await page.setViewportSize({ width: 1280, height: 900 });
+  }
   expect(errors).toEqual([]);
 });
 
@@ -232,4 +276,63 @@ test('sourced memory candidates, correction history, revoke and explicit message
   ).json();
   expect(records.filter((m: any) => m.status === 'active')).toHaveLength(1);
   expect(records.find((m: any) => m.status === 'active').sources[0].type).toBe('message');
+});
+
+test('read-only MCP connection, scoped grants, runtime calls and revocation', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: '工具与权限', exact: true }).click();
+  await page.getByRole('button', { name: '添加工具连接', exact: true }).click();
+  await page.getByLabel('工具连接名称').fill('研究资料工具');
+  await page.getByRole('tab', { name: '联网搜索', exact: true }).click();
+  await expect(page.getByLabel('工具连接名称')).not.toBeVisible();
+  await page.getByRole('tab', { name: '联网搜索', exact: true }).press('ArrowUp');
+  await expect(page.getByRole('tab', { name: '工具与权限', exact: true })).toBeFocused();
+  await expect(page.getByLabel('工具连接名称')).toHaveValue('研究资料工具');
+  await page.getByLabel('工具服务地址').fill('http://127.0.0.1:3901/mcp');
+  await page.getByLabel('访问令牌（可选）').fill('mcp-test-secret');
+  await page.getByLabel('允许本地或内网工具服务').check();
+  await page.getByRole('button', { name: '保存工具连接', exact: true }).click();
+  await page.getByRole('button', { name: '测试工具连接', exact: true }).click();
+  await expect(page.getByText('连接测试通过', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('delete_notes 删除笔记')).toHaveCount(0);
+  const readonly = page.locator('.tool-option').filter({ hasText: 'fetch_notes' }).locator('input');
+  const write = page.locator('.tool-option').filter({ hasText: 'delete_notes' }).locator('input');
+  await expect(write).toBeDisabled();
+  await readonly.check();
+  await page.getByLabel('我已确认所选工具只读取资料').check();
+  await page.getByRole('button', { name: '保存工具授权', exact: true }).click();
+  await expect(page.getByText('工具授权已保存', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/mcp-settings.png', fullPage: true });
+  const exported = await (await page.request.get('/api/export')).text();
+  expect(exported).not.toContain('mcp-test-secret');
+  expect(exported).not.toContain('encryptedKey');
+  await page.getByRole('button', { name: '新对话', exact: true }).click();
+  await page.getByRole('button', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '新建任务', exact: true }).click();
+  await page.getByRole('textbox', { name: '发送消息' }).fill('请使用工具资料整理研究摘要');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.locator('.markdown')).toContainText('可信工具资料', { timeout: 15000 });
+  await expect(page.locator('.task-card .status')).toHaveText(/已完成/);
+  await page.locator('.execution-details summary').click();
+  await expect(page.locator('.execution-details')).toContainText('研究资料工具 · fetch_notes');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('tab', { name: '工具与权限', exact: true }).click();
+  await readonly.uncheck();
+  await page.getByLabel('我已确认所选工具只读取资料').check();
+  await page.getByRole('button', { name: '保存工具授权', exact: true }).click();
+  await expect(page.getByText('工具授权已保存', { exact: true })).toBeVisible();
+  const grants = await (
+    await page.request.get('/api/tool-grants?assistantId=general&projectId=')
+  ).json();
+  expect(grants[0].tools).toHaveLength(0);
+  await page.setViewportSize({ width: 375, height: 850 });
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    .toBe(true);
+  await page.screenshot({
+    path: 'test-results/mcp-mobile.png',
+    fullPage: true,
+    animations: 'disabled',
+  });
 });

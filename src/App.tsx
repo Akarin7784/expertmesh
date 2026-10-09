@@ -16,7 +16,6 @@ import {
   Paperclip,
   Play,
   Plus,
-  Search,
   Settings,
   SlidersHorizontal,
   Sparkles,
@@ -45,6 +44,8 @@ import type {
 import { providers } from '../shared/types';
 import { api, bootstrap, post, put, remove, type Thread } from './api';
 import { Logo } from './Logo';
+import { ToolSettings } from './ToolSettings';
+import { SettingsBook, SettingsChapter } from './SettingsBook';
 import { MemoryPanel, MemoryCapture } from './MemoryPanel';
 import { Select } from './Select';
 import { ExecutionDetails } from './ExecutionDetails';
@@ -1026,10 +1027,22 @@ export default function App() {
   };
   const project = data.projects.find((p) => p.id === projectId),
     assistant = data.assistants.find((a) => a.id === assistantId);
+  useEffect(() => {
+    const editor = draftRef.current;
+    if (!editor) return;
+    const fit = () => {
+      editor.style.height = 'auto';
+      editor.style.height = Math.min(264, Math.max(96, editor.scrollHeight)) + 'px';
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [draft, page, loaded, !!thread?.messages.length]);
   const composer = (
     <div className="composer-wrap">
       <div className="composer">
         <textarea
+          className="composer-input"
           ref={draftRef}
           aria-label="发送消息"
           placeholder={waiting ? '你可以在任务完成后继续追问' : '有什么我可以帮你完成？'}
@@ -1062,46 +1075,41 @@ export default function App() {
           </div>
         )}
         <div className="composer-tools">
-          <button
-            className="icon-button"
-            aria-label="添加附件"
-            disabled={uploading}
-            onClick={() => input.current?.click()}
-          >
-            {uploading ? <LoaderCircle className="spin" size={18} /> : <Paperclip size={18} />}
-          </button>
-          <Select
-            aria-label="工作模式"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as 'chat' | 'task')}
-          >
-            <option value="chat">对话</option>
-            <option value="task">执行任务</option>
-          </Select>
-          <button
-            className={'web-toggle ' + (web ? 'is-on' : '')}
-            aria-label="联网搜索"
-            aria-pressed={web}
-            onClick={() => {
-              if (!data.search.enabled) {
-                navigate('settings');
-                setNotice('先配置搜索服务，再开启联网');
-                return;
-              }
-              setWeb(!web);
-            }}
-          >
-            <Globe size={15} />
-            <span>联网</span>
-          </button>
-          {data.connections.length > 0 ? (
-            <ModelPicker data={data} value={model} onChange={setModel} />
-          ) : (
-            <button className="connect-model" onClick={() => setModal({ kind: 'connection' })}>
-              连接模型
-              <ChevronDown size={13} />
+          <div className="composer-options">
+            <button
+              className="icon-button"
+              aria-label="添加附件"
+              disabled={uploading}
+              onClick={() => input.current?.click()}
+            >
+              {uploading ? <LoaderCircle className="spin" size={18} /> : <Paperclip size={18} />}
             </button>
-          )}
+
+            <button
+              className={'web-toggle ' + (web ? 'is-on' : '')}
+              aria-label="联网搜索"
+              aria-pressed={web}
+              onClick={() => {
+                if (!data.search.enabled) {
+                  navigate('settings');
+                  setNotice('先配置搜索服务，再开启联网');
+                  return;
+                }
+                setWeb(!web);
+              }}
+            >
+              <Globe size={15} />
+              <span>联网</span>
+            </button>
+            {data.connections.length > 0 ? (
+              <ModelPicker data={data} value={model} onChange={setModel} />
+            ) : (
+              <button className="connect-model" onClick={() => setModal({ kind: 'connection' })}>
+                连接模型
+                <ChevronDown size={13} />
+              </button>
+            )}
+          </div>
           {waiting ? (
             <button
               className="send"
@@ -1109,6 +1117,7 @@ export default function App() {
               onClick={() => control(activeTask!.id, 'pause')}
             >
               <Square size={13} />
+              <span>暂停</span>
             </button>
           ) : (
             <button
@@ -1117,7 +1126,8 @@ export default function App() {
               disabled={!draft.trim() || sending || uploading || !!activeTask}
               onClick={() => void send()}
             >
-              {sending ? <LoaderCircle className="spin" size={18} /> : <ArrowUp size={19} />}
+              {sending ? <LoaderCircle className="spin" size={16} /> : <ArrowUp size={16} />}
+              <span>{sending ? '发送中' : '发送'}</span>
             </button>
           )}
         </div>
@@ -1145,7 +1155,7 @@ export default function App() {
           </button>
         </div>
         <button className="new-chat" onClick={() => newChat('', 'general')}>
-          <SquarePen size={17} />
+          <Plus size={19} strokeWidth={2} />
           新对话
         </button>
         <nav>
@@ -1261,39 +1271,10 @@ export default function App() {
                 (!thread?.messages.length ? (
                   <div className="welcome">
                     <Logo className="welcome-mark" />
+                    <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
                     <h1>今天，我们一起完成什么？</h1>
+                    <p className="welcome-intro">从一个问题、一份资料，或一个新的想法开始。</p>
                     {composer}
-                    <div className="quick-actions">
-                      {[
-                        {
-                          name: '研究',
-                          icon: Search,
-                          prompt: '帮我研究这个主题，整理主要观点与来源：',
-                        },
-                        { name: '写作', icon: SquarePen, prompt: '帮我写一份清晰的项目介绍：' },
-                        {
-                          name: '文件',
-                          icon: FileText,
-                          prompt: '总结上传资料中的关键信息，并生成一份摘要。',
-                        },
-                        {
-                          name: '编程',
-                          icon: SlidersHorizontal,
-                          prompt: '请分析上传的代码，并给出改进方案与修改后的文件。',
-                        },
-                      ].map((q) => (
-                        <button
-                          key={q.name}
-                          onClick={() => {
-                            setDraft(q.prompt);
-                            draftRef.current?.focus();
-                          }}
-                        >
-                          <q.icon size={15} />
-                          {q.name}
-                        </button>
-                      ))}
-                    </div>
                   </div>
                 ) : (
                   <div className="thread">
@@ -1330,6 +1311,7 @@ export default function App() {
                         <article id={'message-' + m.id} key={m.id} className={'message ' + m.role}>
                           {m.role === 'user' ? (
                             <>
+                              <div className="message-author">你</div>
                               <div className="user-bubble">{m.content}</div>
                               <div className="user-actions">
                                 <button
@@ -1548,7 +1530,11 @@ export default function App() {
               {page === 'tasks' && (
                 <div className="page-inner">
                   <div className="page-heading">
-                    <h1>任务</h1>
+                    <div className="page-title">
+                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <h1>任务</h1>
+                      <p className="page-intro">跟进正在进行的工作，回看每一次交付。</p>
+                    </div>
                     <button
                       className="primary"
                       onClick={() => {
@@ -1609,7 +1595,11 @@ export default function App() {
               {page === 'projects' && (
                 <div className="page-inner">
                   <div className="page-heading">
-                    <h1>项目</h1>
+                    <div className="page-title">
+                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <h1>项目</h1>
+                      <p className="page-intro">把背景、资料与相关对话，整理在同一处。</p>
+                    </div>
                     <button className="primary" onClick={() => setModal({ kind: 'project' })}>
                       <Plus size={16} />
                       新建项目
@@ -1674,7 +1664,11 @@ export default function App() {
               {page === 'assistants' && (
                 <div className="page-inner">
                   <div className="page-heading">
-                    <h1>你的助手</h1>
+                    <div className="page-title">
+                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <h1>你的助手</h1>
+                      <p className="page-intro">为不同的工作，选择合适的同行者。</p>
+                    </div>
                     <button className="primary" onClick={() => setModal({ kind: 'assistant' })}>
                       <Plus size={16} />
                       创建助手
@@ -1719,7 +1713,11 @@ export default function App() {
               {page === 'files' && (
                 <div className="page-inner">
                   <div className="page-heading">
-                    <h1>文件</h1>
+                    <div className="page-title">
+                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <h1>文件</h1>
+                      <p className="page-intro">收集研究资料，保存写作与协作的成果。</p>
+                    </div>
                     <button
                       className="primary"
                       disabled={uploading}
@@ -1800,144 +1798,155 @@ export default function App() {
                 </div>
               )}
               {page === 'settings' && (
-                <div className="page-inner settings-page">
-                  <div className="page-heading">
-                    <h1>模型与服务商</h1>
-                    <button className="primary" onClick={() => setModal({ kind: 'connection' })}>
-                      <Plus size={16} />
-                      添加服务
-                    </button>
-                  </div>
-                  {data.connections.length > 0 && (
-                    <label className="default-model">
-                      默认模型
-                      <ModelPicker
-                        data={data}
-                        value={data.defaultModel || model}
-                        onChange={async (value) => {
-                          try {
-                            await put('/settings/default-model', { value });
-                            setModel(value);
-                            await refresh();
-                            setNotice('默认模型已更新');
-                          } catch (e) {
-                            showError(e);
-                          }
-                        }}
-                        id="default-model"
-                      />
-                    </label>
-                  )}
-                  {data.connections.map((c) => (
-                    <section className="connection-card" key={c.id}>
-                      <div className="connection-heading">
-                        <div className="provider-avatar">{c.name[0]}</div>
-                        <div className="grow">
-                          <h3>{c.name}</h3>
-                          <p className="hint">
-                            {providers.find((p) => p.id === c.provider)?.name} · {c.models.length}{' '}
-                            个模型 {c.hasKey ? '· 密钥已保存' : ''}
-                          </p>
-                        </div>
-                        <div className="actions">
-                          <button
-                            disabled={!!testing}
-                            onClick={async () => {
-                              setTesting(c.id);
-                              try {
-                                const result = await post<{ models: string[] }>(
-                                  '/connections/' + c.id + '/test',
-                                );
-                                setDiscovered({ ...discovered, [c.id]: result.models });
-                                setNotice('连接成功，已获取模型列表');
-                              } catch (e) {
-                                showError(e);
-                              } finally {
-                                setTesting('');
-                              }
-                            }}
-                          >
-                            {testing === c.id ? '测试中…' : '测试连接'}
-                          </button>
-                          <button
-                            className="icon-button"
-                            aria-label={`编辑服务 ${c.name}`}
-                            onClick={() => setModal({ kind: 'connection', value: c })}
-                          >
-                            <SlidersHorizontal size={16} />
-                          </button>
-                          <button
-                            className="icon-button"
-                            aria-label={`删除服务 ${c.name}`}
-                            onClick={() =>
-                              confirm(
-                                '移除模型服务？',
-                                '已有对话与文件会保留，此服务将不再出现在模型选择中。',
-                                () => remove('/connections/' + c.id),
-                              )
-                            }
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="model-tags">
-                        {c.models.map((m) => (
-                          <span key={m.id}>{m.name}</span>
-                        ))}
-                      </div>
-                      {discovered[c.id] && (
-                        <details>
-                          <summary>可用模型 · {discovered[c.id].length}</summary>
-                          <p className="model-discovery">{discovered[c.id].join('、')}</p>
-                        </details>
-                      )}
-                    </section>
-                  ))}
-                  {!data.connections.length && (
-                    <div className="empty-state">
-                      <Sparkles size={30} />
-                      <h3>连接你喜欢的模型</h3>
-                      <p>使用自己的 API Key，或连接本地 Ollama。</p>
-                      <button onClick={() => setModal({ kind: 'connection' })}>
-                        添加第一个服务
+                <SettingsBook>
+                  <SettingsChapter id="models">
+                    <div className="page-heading">
+                      <h2>模型与服务商</h2>
+                      <button className="primary" onClick={() => setModal({ kind: 'connection' })}>
+                        <Plus size={16} />
+                        添加服务
                       </button>
                     </div>
-                  )}
-                  <section className="settings-section">
-                    <h2>工具</h2>
-                    <div className="setting-row">
-                      <span>资料读取与文件生成</span>
-                      <span className="hint">可在助手配置中启用</span>
-                    </div>
-                    <div className="setting-row">
-                      <span>代码执行与 MCP</span>
-                      <span className="hint">尚未接入</span>
-                    </div>
-                  </section>
-                  <SearchSettingsPanel value={data.search} onSave={refresh} onError={showError} />
-                  <section className="settings-section">
-                    <h2>外观</h2>
-                    <div className="setting-row">
-                      <label htmlFor="theme">显示模式</label>
-                      <Select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)}>
-                        <option value="system">跟随系统</option>
-                        <option value="light">浅色</option>
-                        <option value="dark">深色</option>
-                      </Select>
-                    </div>
-                  </section>
-                  <section className="settings-section">
-                    <h2>数据</h2>
-                    <div className="setting-row">
-                      <span>导出对话、项目与文件</span>
-                      <a className="secondary" href="/api/export">
-                        <Download size={15} />
-                        导出数据
-                      </a>
-                    </div>
-                  </section>
-                </div>
+                    {data.connections.length > 0 && (
+                      <label className="default-model">
+                        默认模型
+                        <ModelPicker
+                          data={data}
+                          value={data.defaultModel || model}
+                          onChange={async (value) => {
+                            try {
+                              await put('/settings/default-model', { value });
+                              setModel(value);
+                              await refresh();
+                              setNotice('默认模型已更新');
+                            } catch (e) {
+                              showError(e);
+                            }
+                          }}
+                          id="default-model"
+                        />
+                      </label>
+                    )}
+                    {data.connections.map((c) => (
+                      <section className="connection-card" key={c.id}>
+                        <div className="connection-heading">
+                          <div className="provider-avatar">{c.name[0]}</div>
+                          <div className="grow">
+                            <h3>{c.name}</h3>
+                            <p className="hint">
+                              {providers.find((p) => p.id === c.provider)?.name} · {c.models.length}{' '}
+                              个模型 {c.hasKey ? '· 密钥已保存' : ''}
+                            </p>
+                          </div>
+                          <div className="actions">
+                            <button
+                              disabled={!!testing}
+                              onClick={async () => {
+                                setTesting(c.id);
+                                try {
+                                  const result = await post<{ models: string[] }>(
+                                    '/connections/' + c.id + '/test',
+                                  );
+                                  setDiscovered({ ...discovered, [c.id]: result.models });
+                                  setNotice('连接成功，已获取模型列表');
+                                } catch (e) {
+                                  showError(e);
+                                } finally {
+                                  setTesting('');
+                                }
+                              }}
+                            >
+                              {testing === c.id ? '测试中…' : '测试连接'}
+                            </button>
+                            <button
+                              className="icon-button"
+                              aria-label={`编辑服务 ${c.name}`}
+                              onClick={() => setModal({ kind: 'connection', value: c })}
+                            >
+                              <SlidersHorizontal size={16} />
+                            </button>
+                            <button
+                              className="icon-button"
+                              aria-label={`删除服务 ${c.name}`}
+                              onClick={() =>
+                                confirm(
+                                  '移除模型服务？',
+                                  '已有对话与文件会保留，此服务将不再出现在模型选择中。',
+                                  () => remove('/connections/' + c.id),
+                                )
+                              }
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="model-tags">
+                          {c.models.map((m) => (
+                            <span key={m.id}>{m.name}</span>
+                          ))}
+                        </div>
+                        {discovered[c.id] && (
+                          <details>
+                            <summary>可用模型 · {discovered[c.id].length}</summary>
+                            <p className="model-discovery">{discovered[c.id].join('、')}</p>
+                          </details>
+                        )}
+                      </section>
+                    ))}
+                    {!data.connections.length && (
+                      <div className="empty-state">
+                        <Sparkles size={30} />
+                        <h3>连接你喜欢的模型</h3>
+                        <p>使用自己的 API Key，或连接本地 Ollama。</p>
+                        <button onClick={() => setModal({ kind: 'connection' })}>
+                          添加第一个服务
+                        </button>
+                      </div>
+                    )}
+                  </SettingsChapter>
+                  <SettingsChapter id="tools">
+                    <section className="settings-section">
+                      <ToolSettings assistants={data.assistants} projects={data.projects} />
+                      <h2>工具</h2>
+                      <div className="setting-row">
+                        <span>资料读取与文件生成</span>
+                        <span className="hint">可在助手配置中启用</span>
+                      </div>
+                      <div className="setting-row">
+                        <span>代码执行</span>
+                        <span className="hint">尚未接入</span>
+                      </div>
+                    </section>
+                  </SettingsChapter>
+                  <SettingsChapter id="search">
+                    <SearchSettingsPanel value={data.search} onSave={refresh} onError={showError} />
+                  </SettingsChapter>
+                  <SettingsChapter id="appearance">
+                    <section className="settings-section">
+                      <h2>外观</h2>
+                      <div className="setting-row">
+                        <label htmlFor="theme">显示模式</label>
+                        <Select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)}>
+                          <option value="system">跟随系统</option>
+                          <option value="light">浅色</option>
+                          <option value="dark">深色</option>
+                        </Select>
+                      </div>
+                    </section>
+                  </SettingsChapter>
+                  <SettingsChapter id="data">
+                    <section className="settings-section">
+                      <h2>数据</h2>
+                      <div className="setting-row">
+                        <span>导出对话、项目与文件</span>
+                        <a className="secondary" href="/api/export">
+                          <Download size={15} />
+                          导出数据
+                        </a>
+                      </div>
+                    </section>
+                  </SettingsChapter>
+                </SettingsBook>
               )}
             </>
           )}

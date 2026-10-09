@@ -20,6 +20,7 @@ import { Store, now, uid } from './db';
 import { Vault, validateEndpoint } from './security';
 import { discover, type CredentialConnection } from './providers';
 import { Runtime, publicTask, type TaskRow } from './runtime';
+import { Mcp } from './mcp';
 import { Memories, memorySchema, correctionSchema, actionSchema } from './memory';
 import { publicSearch, searchWeb, type SearchConfig } from './search';
 
@@ -64,7 +65,8 @@ function publicConnection(c: CredentialConnection): Connection {
 const fileMeta = (f: FileRecord) => ({ ...f, content: '' });
 export function createApp(store: Store, vault: Vault) {
   const app = express(),
-    runtime = new Runtime(store, vault);
+    runtime = new Runtime(store, vault),
+    mcp = new Mcp(store, vault);
   app.disable('x-powered-by');
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -112,6 +114,7 @@ export function createApp(store: Store, vault: Vault) {
   app.get('/api/health', (_req, res) => res.json({ ok: true, version: '0.1.0' }));
   app.get('/api/bootstrap', (_req, res) =>
     res.json({
+      toolConnections: mcp.list(),
       connections: listConnections(),
       projects: store.all('projects'),
       assistants: store.all('assistants'),
@@ -256,6 +259,10 @@ export function createApp(store: Store, vault: Vault) {
     assertIdle((t) => t.projectId === req.params.id);
     store.transaction(() => {
       store.delete('projects', req.params.id);
+      for (const g of store
+        .all<{ id: string; projectId: string }>('tool_grants')
+        .filter((g) => g.projectId === req.params.id))
+        store.delete('tool_grants', g.id);
       for (const c of store
         .all<Conversation>('conversations')
         .filter((c) => c.projectId === req.params.id))
@@ -290,6 +297,10 @@ export function createApp(store: Store, vault: Vault) {
     requireRow('assistants', req.params.id);
     assertIdle((t) => t.assistantId === req.params.id);
     store.delete('assistants', req.params.id);
+    for (const g of store
+      .all<{ id: string; assistantId: string }>('tool_grants')
+      .filter((g) => g.assistantId === req.params.id))
+      store.delete('tool_grants', g.id);
     for (const m of store.all<Memory>('memories').filter((m) => m.assistantId === req.params.id))
       store.delete('memories', m.id);
     for (const c of store
@@ -325,6 +336,52 @@ export function createApp(store: Store, vault: Vault) {
     requireRow('memories', req.params.id);
     store.delete('memories', req.params.id);
     res.json({ ok: true });
+  });
+  app.get('/api/tool-connections', (_req, res) => res.json(mcp.list()));
+  app.post('/api/tool-connections', async (req, res) =>
+    res.status(201).json(await mcp.save(req.body)),
+  );
+  app.put('/api/tool-connections/:id', async (req, res) => {
+    requireRow('tool_connections', req.params.id);
+    res.json(await mcp.save(req.body, req.params.id));
+  });
+  app.post('/api/tool-connections/:id/test', async (req, res) =>
+    res.json(await mcp.test(req.params.id)),
+  );
+  app.patch('/api/tool-connections/:id', (req, res) =>
+    res.json(mcp.setEnabled(req.params.id, z.boolean().parse(req.body.enabled))),
+  );
+  app.delete('/api/tool-connections/:id', (req, res) => {
+    requireRow('tool_connections', req.params.id);
+    store.transaction(() => {
+      store.delete('tool_connections', req.params.id);
+      for (const g of store
+        .all<{ id: string; connectionId: string }>('tool_grants')
+        .filter((g) => g.connectionId === req.params.id))
+        store.delete('tool_grants', g.id);
+    });
+    res.json({ ok: true });
+  });
+  app.get('/api/tool-grants', (req, res) =>
+    res.json(
+      mcp.grants(
+        z.string().min(1).parse(req.query.assistantId),
+        z.string().parse(req.query.projectId || ''),
+      ),
+    ),
+  );
+  app.put('/api/tool-grants', (req, res) => {
+    const b = z
+      .object({
+        connectionId: z.string().min(1),
+        assistantId: z.string().min(1),
+        projectId: z.string().default(''),
+        tools: z.array(z.string().min(1)).max(100),
+        confirmedReadOnly: z.literal(true),
+      })
+      .strict()
+      .parse(req.body);
+    res.json(mcp.grant(b.connectionId, b.assistantId, b.projectId, b.tools));
   });
   app.post('/api/conversations', (req, res) => {
     const b = z
@@ -608,6 +665,8 @@ export function createApp(store: Store, vault: Vault) {
       sources: store.all('sources'),
       search: publicSearch(store.get<SearchConfig>('settings', 'search')),
       connections: listConnections(),
+      toolConnections: mcp.list(),
+      toolGrants: store.all('tool_grants'),
     });
   });
   const dist = resolve('dist');

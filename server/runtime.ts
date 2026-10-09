@@ -12,6 +12,7 @@ import type {
 import { Store, now, uid } from './db';
 import { Vault } from './security';
 import { searchWeb, readWebpage, type SearchConfig } from './search';
+import { Mcp } from './mcp';
 import { Memories, memorySchema } from './memory';
 import { delegationSchema, reviewSchema } from './contracts';
 import {
@@ -218,6 +219,10 @@ export class Runtime {
       provider: t.config.connection.provider,
       modelId: t.modelId,
       callId,
+      displayName:
+        kind === 'tool' && name.startsWith('mcp_')
+          ? new Mcp(this.store, this.vault).label(name)
+          : undefined,
       cached,
       status: 'running',
       startedAt: now(),
@@ -454,11 +459,14 @@ export class Runtime {
     );
   }
   available(t: TaskRow) {
-    return tools.filter(
-      (tool) =>
-        (!t.parentId || !['delegate_task', 'review_task'].includes(tool.name)) &&
-        (!['search_web', 'read_webpage'].includes(tool.name) || !!t.config.search),
-    );
+    return [
+      ...tools.filter(
+        (tool) =>
+          (!t.parentId || !['delegate_task', 'review_task'].includes(tool.name)) &&
+          (!['search_web', 'read_webpage'].includes(tool.name) || !!t.config.search),
+      ),
+      ...new Mcp(this.store, this.vault).available(t.assistantId, t.projectId),
+    ];
   }
   files(t: TaskRow) {
     const artifacts = this.store
@@ -663,6 +671,8 @@ export class Runtime {
       throw Error('工具参数不是有效 JSON');
     }
     if (!a || typeof a !== 'object' || Array.isArray(a)) throw Error('工具参数必须是对象');
+    if (call.name.startsWith('mcp_'))
+      return new Mcp(this.store, this.vault).call(t.assistantId, t.projectId, call.name, a, signal);
     if (call.name === 'search_memory' || call.name === 'search_history') {
       if (typeof a.query !== 'string' || !a.query.trim() || a.query.length > 200)
         throw Error('检索词必须为1至200个字符');

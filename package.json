@@ -18,6 +18,7 @@
     "format:check": "prettier --check src server shared tests *.ts *.json"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
     "cheerio": "^1.2.0",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",

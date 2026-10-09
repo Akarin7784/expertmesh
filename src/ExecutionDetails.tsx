@@ -102,7 +102,9 @@ export function ExecutionDetails({
             .map((r) => (
               <li key={r.id}>
                 <div>
-                  <strong>{r.kind === 'model' ? r.modelId : names[r.name] || r.name}</strong>
+                  <strong>
+                    {r.kind === 'model' ? r.modelId : r.displayName || names[r.name] || r.name}
+                  </strong>
                   <span>
                     {r.cached ? '结果复用 · ' : ''}
                     {statuses[r.status]}

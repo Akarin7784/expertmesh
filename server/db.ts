@@ -21,6 +21,8 @@ const tables = [
   'tool_results',
   'sources',
   'records',
+  'tool_connections',
+  'tool_grants',
 ] as const;
 export type Table = (typeof tables)[number];
 export class Store {

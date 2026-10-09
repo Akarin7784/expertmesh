@@ -1,7 +1,13 @@
+import { mcpHandler } from './mock-mcp';
 import { createServer, type ServerResponse } from 'node:http';
 export async function mockProvider(port = 0) {
   const requests: any[] = [];
+  const mcp = mcpHandler();
   const server = createServer(async (req, res) => {
+    if (req.url === '/mcp') {
+      await mcp.handler(req, res);
+      return;
+    }
     if (req.url === '/search') {
       let raw = '';
       for await (const chunk of req) raw += chunk;
@@ -65,6 +71,14 @@ export async function mockProvider(port = 0) {
     const toolResults = body.messages.filter((m: any) => m.role === 'tool');
     const definitions = body.tools?.map((t: any) => t.function.name) || [];
     const completed = (id: string) => toolResults.some((r: any) => r.tool_call_id === id);
+    const external = body.tools?.find(
+      (t: any) =>
+        t.function.name.startsWith('mcp_') && t.function.description.includes('fetch_notes'),
+    );
+    if (external && goal.includes('工具资料') && !completed('mcp-1')) {
+      tool(external.function.name, { topic: '研究摘要' }, 'mcp-1');
+      return;
+    }
     if (
       definitions.includes('search_history') &&
       goal.includes('长期偏好') &&
@@ -152,11 +166,13 @@ export async function mockProvider(port = 0) {
       );
       return;
     }
-    const text = completed('search-1')
-      ? '联网搜索已完成。[搜索资料](https://example.com/research)'
-      : completed('delegate-1')
-        ? '协作已完成，研究助手的摘要已经汇总。'
-        : '整理完成。你可以查看生成的资料摘要，并继续提出修改要求。';
+    const text = completed('mcp-1')
+      ? JSON.parse(toolResults.find((r: any) => r.tool_call_id === 'mcp-1').content).text
+      : completed('search-1')
+        ? '联网搜索已完成。[搜索资料](https://example.com/research)'
+        : completed('delegate-1')
+          ? '协作已完成，研究助手的摘要已经汇总。'
+          : '整理完成。你可以查看生成的资料摘要，并继续提出修改要求。';
     send({ content: text.slice(0, 5) });
     const timer = setTimeout(
       () => {

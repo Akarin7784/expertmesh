@@ -150,6 +150,7 @@ export interface ExecutionRecord {
   modelId: string;
   provider: Provider;
   callId?: string;
+  displayName?: string;
   cached: boolean;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
   startedAt: string;
@@ -160,6 +161,7 @@ export interface ExecutionRecord {
   error?: string;
 }
 export interface Bootstrap {
+  toolConnections?: ToolConnection[];
   search: SearchSettings;
   connections: Connection[];
   projects: Project[];
@@ -168,6 +170,34 @@ export interface Bootstrap {
   tasks: Task[];
   files: FileRecord[];
   defaultModel: string;
+}
+export interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  hash: string;
+  readOnly: boolean;
+  blockedReason?: string;
+}
+export interface ToolConnection {
+  id: string;
+  name: string;
+  url: string;
+  protocol: '2025-11-25' | '2026-07-28';
+  allowLocal: boolean;
+  enabled: boolean;
+  hasKey: boolean;
+  status: 'untested' | 'ready' | 'failed';
+  tools: McpTool[];
+  testedAt?: string;
+  error?: string;
+}
+export interface ToolGrant {
+  id: string;
+  connectionId: string;
+  assistantId: string;
+  projectId: string;
+  tools: { name: string; hash: string }[];
 }
 export interface SearchSettings {
   provider: 'tavily' | 'searxng';
