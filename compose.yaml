@@ -1,0 +1,13 @@
+name: expertmesh
+services:
+  expertmesh:
+    build: .
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - expertmesh-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+volumes:
+  expertmesh-data:
