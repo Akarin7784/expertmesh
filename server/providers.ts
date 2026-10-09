@@ -1,6 +1,6 @@
 import { uid } from './db';
 import { secureFetch } from './security';
-import type { Connection } from '../shared/types';
+import type { Connection, TokenUsage } from '../shared/types';
 
 export interface CredentialConnection extends Connection {
   encryptedKey: string;
@@ -17,6 +17,7 @@ export interface Call {
   nativeId?: string;
 }
 export interface Turn {
+  usage?: TokenUsage;
   text: string;
   calls: Call[];
   history: any[];
@@ -30,6 +31,7 @@ export interface Request {
   tools: Tool[];
   signal: AbortSignal;
   onText?: (text: string) => void;
+  onUsage?: (usage: TokenUsage) => void;
 }
 export type Fetcher = typeof fetch;
 
@@ -164,6 +166,14 @@ export function toolResult(provider: Connection['provider'], call: Call, result:
   return { role: 'tool', tool_call_id: call.id, content: result };
 }
 export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Turn> {
+  let usage: TokenUsage | undefined;
+  const count = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const report = (input: unknown, output: unknown, cached?: unknown) => {
+    if (!count(input) || !count(output)) return;
+    usage = { input, output, ...(count(cached) ? { cachedInput: cached } : {}) };
+    r.onUsage?.(usage);
+  };
   let text = '',
     completed = false;
   const calls: Call[] = [];
@@ -194,6 +204,11 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
       if (e.type === 'response.output_text.delta') add(e.delta);
       if (e.type === 'response.completed') {
         output = e.response.output || [];
+        report(
+          e.response.usage?.input_tokens,
+          e.response.usage?.output_tokens,
+          e.response.usage?.input_tokens_details?.cached_tokens,
+        );
         completed = true;
       }
       if (['error', 'response.failed', 'response.incomplete'].includes(e.type))
@@ -232,7 +247,21 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
     );
     const blocks: any[] = [];
     const args: Record<number, string> = {};
+    let nativeUsage: any = {};
     for await (const e of sse(res.body!)) {
+      if (e.type === 'message_start') nativeUsage = { ...nativeUsage, ...e.message?.usage };
+      if (e.type === 'message_delta') nativeUsage = { ...nativeUsage, ...e.usage };
+      if (e.type === 'message_start' || e.type === 'message_delta') {
+        const input = nativeUsage.input_tokens;
+        if (count(input))
+          report(
+            input +
+              (nativeUsage.cache_creation_input_tokens || 0) +
+              (nativeUsage.cache_read_input_tokens || 0),
+            nativeUsage.output_tokens,
+            nativeUsage.cache_read_input_tokens,
+          );
+      }
       if (e.type === 'content_block_start') {
         blocks[e.index] = e.content_block;
         if (e.content_block.type === 'tool_use') args[e.index] = '';
@@ -293,6 +322,14 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
       if (e.error) throw Error('模型服务生成失败，请检查连接');
       if (e.promptFeedback?.blockReason) throw Error('模型服务未接受这次请求，请调整内容');
       const c = e.candidates?.[0];
+      if (e.usageMetadata)
+        report(
+          e.usageMetadata.promptTokenCount,
+          count(e.usageMetadata.candidatesTokenCount)
+            ? e.usageMetadata.candidatesTokenCount + (e.usageMetadata.thoughtsTokenCount || 0)
+            : undefined,
+          e.usageMetadata.cachedContentTokenCount,
+        );
       for (const p of c?.content?.parts || []) {
         parts.push(p);
         if (p.text && !p.thought) add(p.text);
@@ -339,7 +376,10 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
           arguments: JSON.stringify(c.function.arguments),
         });
       }
-      if (e.done) completed = true;
+      if (e.done) {
+        completed = true;
+        report(e.prompt_eval_count, e.eval_count);
+      }
     }
     history.push({
       role: 'assistant',
@@ -355,6 +395,7 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
         model: r.model,
         messages: [{ role: 'system', content: r.system }, ...r.history],
         stream: true,
+        stream_options: { include_usage: true },
         ...(r.tools.length
           ? { tools: r.tools.map((t) => ({ type: 'function', function: t })) }
           : {}),
@@ -366,6 +407,12 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
     let reasoning = '';
     for await (const e of sse(res.body!)) {
       if (e.error) throw Error('模型服务生成失败，请检查模型配置');
+      if (e.usage)
+        report(
+          e.usage.prompt_tokens,
+          e.usage.completion_tokens,
+          e.usage.prompt_tokens_details?.cached_tokens,
+        );
       const c = e.choices?.[0],
         d = c?.delta;
       if (d?.content) add(d.content);
@@ -400,7 +447,7 @@ export async function generate(r: Request, fetcher: Fetcher = fetch): Promise<Tu
   }
   if (!completed) throw Error('模型连接提前断开，已收到的内容尚未完成');
   if (!text.trim() && !calls.length) throw Error('模型未返回可用的回答');
-  return { text, calls, history };
+  return { text, calls, history, usage };
 }
 export async function discover(connection: Connection, key: string): Promise<string[]> {
   const p = connection.provider;

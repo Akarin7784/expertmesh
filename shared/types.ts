@@ -37,6 +37,34 @@ export interface Memory {
   projectId: string;
   content: string;
   createdAt: string;
+  status?: MemoryStatus;
+  revision?: number;
+  reason?: string;
+  sources?: MemorySource[];
+  expiresAt?: string;
+  updatedAt?: string;
+  history?: MemoryRevision[];
+  invalidationReason?: string;
+}
+export type MemoryStatus = 'candidate' | 'active' | 'revoked' | 'stale';
+export interface MemorySource {
+  type: 'manual' | 'message' | 'file' | 'web' | 'legacy';
+  id: string;
+  title: string;
+  excerpt: string;
+  hash: string;
+  conversationId?: string;
+  url?: string;
+}
+export interface MemoryRevision {
+  revision: number;
+  content: string;
+  status: MemoryStatus;
+  reason: string;
+  sources: MemorySource[];
+  expiresAt?: string;
+  changedAt: string;
+  action: 'created' | 'confirmed' | 'corrected' | 'revoked' | 'invalidated';
 }
 export interface Conversation {
   id: string;
@@ -75,6 +103,8 @@ export interface TaskEvent {
   createdAt: string;
 }
 export interface Task {
+  contract?: TaskContract;
+  review?: TaskReview;
   id: string;
   parentId: string;
   conversationId: string;
@@ -91,6 +121,43 @@ export interface Task {
   round: number;
   createdAt: string;
   updatedAt: string;
+}
+export interface TaskContract {
+  version: 1;
+  goal: string;
+  input: string;
+  fileIds: string[];
+  deliverable: string;
+  criteria: string[];
+  dependencies: string[];
+}
+export interface TaskReview {
+  decision: 'adopted' | 'rejected';
+  reason: string;
+  checks: { index: number; passed: boolean; evidence: string }[];
+  reviewedAt: string;
+}
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cachedInput?: number;
+}
+export interface ExecutionRecord {
+  id: string;
+  taskId: string;
+  kind: 'execution' | 'model' | 'tool';
+  name: string;
+  modelId: string;
+  provider: Provider;
+  callId?: string;
+  cached: boolean;
+  status: 'running' | 'succeeded' | 'failed' | 'interrupted';
+  startedAt: string;
+  endedAt?: string;
+  durationMs: number | null;
+  usage?: TokenUsage;
+  costUsd: number | null;
+  error?: string;
 }
 export interface Bootstrap {
   search: SearchSettings;

@@ -1,4 +1,5 @@
 import type {
+  ExecutionRecord,
   Bootstrap,
   Conversation,
   FileRecord,
@@ -25,10 +26,13 @@ export const put = <T>(path: string, body: unknown) =>
   api<T>(path, { method: 'PUT', body: JSON.stringify(body) });
 export const remove = (path: string) => api(path, { method: 'DELETE' });
 export type Thread = {
+  memoryCandidates?: number;
+  memoryReviews?: { assistantId: string; count: number }[];
   sources: Omit<WebSource, 'content'>[];
   conversation: Conversation;
   messages: Message[];
   tasks: Task[];
+  records: ExecutionRecord[];
   events: TaskEvent[];
   files: FileRecord[];
 };

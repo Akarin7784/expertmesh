@@ -57,11 +57,39 @@ export async function mockProvider(port = 0) {
         ],
       });
       send({}, 'tool_calls');
+      res.write(
+        `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40 } } })}\n\n`,
+      );
       res.end('data: [DONE]\n\n');
     };
     const toolResults = body.messages.filter((m: any) => m.role === 'tool');
     const definitions = body.tools?.map((t: any) => t.function.name) || [];
     const completed = (id: string) => toolResults.some((r: any) => r.tool_call_id === id);
+    if (
+      definitions.includes('search_history') &&
+      goal.includes('长期偏好') &&
+      !completed('history-1')
+    ) {
+      tool('search_history', { query: '长期偏好' }, 'history-1');
+      return;
+    }
+    if (completed('history-1') && !completed('memory-1')) {
+      const source = JSON.parse(
+        toolResults.find((r: any) => r.tool_call_id === 'history-1').content,
+      ).find((r: any) => r.role === 'user');
+      tool(
+        'propose_memory',
+        {
+          content: '回答先给结论',
+          reason: '用户明确表达长期偏好',
+          source_type: 'message',
+          source_id: source.id,
+          excerpt: '回答先给结论',
+        },
+        'memory-1',
+      );
+      return;
+    }
     if (definitions.includes('search_web') && goal.includes('联网') && !completed('search-1')) {
       tool('search_web', { query: 'Agent 最新资料' }, 'search-1');
       return;
@@ -75,9 +103,30 @@ export async function mockProvider(port = 0) {
         'delegate_task',
         {
           assistant_id: 'researcher',
+          input: '整理当前用户目标，仅使用明确提供的资料。',
+          file_ids: [],
+          deliverable: '简明资料摘要',
+          criteria: ['摘要回应整理目标'],
+          dependencies: [],
           goal: goal.includes('联网') ? '联网整理当前资料，形成摘要' : '整理当前资料，形成摘要',
         },
         'delegate-1',
+      );
+      return;
+    }
+    if (completed('delegate-1') && !completed('review-1')) {
+      const child = JSON.parse(
+        toolResults.find((r: any) => r.tool_call_id === 'delegate-1').content,
+      );
+      tool(
+        'review_task',
+        {
+          task_id: child.taskId,
+          decision: 'adopted',
+          reason: '摘要符合目标',
+          checks: [{ index: 0, passed: true, evidence: '结果提供了资料摘要及交付文件' }],
+        },
+        'review-1',
       );
       return;
     }
@@ -113,6 +162,9 @@ export async function mockProvider(port = 0) {
       () => {
         send({ content: text.slice(5) });
         send({}, 'stop');
+        res.write(
+          `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 40 } } })}\n\n`,
+        );
         res.end('data: [DONE]\n\n');
       },
       goal.includes('慢任务') ? 3000 : 30,

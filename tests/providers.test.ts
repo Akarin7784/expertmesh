@@ -25,6 +25,106 @@ const fixture = (text: string) =>
   (async () =>
     new Response(text, { headers: { 'Content-Type': 'text/event-stream' } })) as typeof fetch;
 
+test('provider usage preserves cumulative totals, cache hits and missing counters', async () => {
+  const cases = [
+    [
+      'openai',
+      frame({ type: 'response.output_text.delta', delta: 'ok' }) +
+        frame({
+          type: 'response.completed',
+          response: {
+            output: [],
+            usage: {
+              input_tokens: 100,
+              output_tokens: 20,
+              input_tokens_details: { cached_tokens: 40 },
+            },
+          },
+        }),
+      { input: 100, output: 20, cachedInput: 40 },
+    ],
+    [
+      'anthropic',
+      [
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+        { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+        {
+          type: 'message_start',
+          message: {
+            usage: {
+              input_tokens: 50,
+              output_tokens: 1,
+              cache_creation_input_tokens: 10,
+              cache_read_input_tokens: 40,
+            },
+          },
+        },
+        { type: 'message_delta', usage: { output_tokens: 15 } },
+        { type: 'message_delta', usage: { output_tokens: 20 } },
+        { type: 'message_stop' },
+      ]
+        .map(frame)
+        .join(''),
+      { input: 100, output: 20, cachedInput: 40 },
+    ],
+    [
+      'gemini',
+      frame({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: {
+          promptTokenCount: 100,
+          candidatesTokenCount: 15,
+          thoughtsTokenCount: 5,
+          cachedContentTokenCount: 40,
+        },
+      }),
+      { input: 100, output: 20, cachedInput: 40 },
+    ],
+    [
+      'compatible',
+      frame({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }) +
+        frame({
+          choices: [],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 20,
+            prompt_tokens_details: { cached_tokens: 40 },
+          },
+        }) +
+        'data: [DONE]\n\n',
+      { input: 100, output: 20, cachedInput: 40 },
+    ],
+    [
+      'ollama',
+      JSON.stringify({
+        message: { content: 'ok' },
+        done: true,
+        prompt_eval_count: 100,
+        eval_count: 20,
+      }) + '\n',
+      { input: 100, output: 20 },
+    ],
+  ] as const;
+  for (const [provider, stream, expected] of cases) {
+    const r = request(provider),
+      observed: unknown[] = [];
+    r.onUsage = (u) => observed.push(u);
+    const turn = await generate(r, fixture(stream));
+    assert.deepEqual(turn.usage, expected, provider);
+    assert.deepEqual(observed.at(-1), expected, provider);
+  }
+  const missing = await generate(
+    request('gemini'),
+    fixture(
+      frame({
+        candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 100 },
+      }),
+    ),
+  );
+  assert.equal(missing.usage, undefined);
+});
+
 test('SSE handles UTF-8 split across byte chunks, CRLF and final frame', async () => {
   const bytes = new TextEncoder().encode(frame({ text: '你好' }) + 'data: {"last":true}'),
     parts = [bytes.slice(0, 22), bytes.slice(22, 23), bytes.slice(23)];

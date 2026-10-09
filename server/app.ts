@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { basename, extname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import type {
+  ExecutionRecord,
   Assistant,
   Connection,
   Conversation,
@@ -19,6 +20,7 @@ import { Store, now, uid } from './db';
 import { Vault, validateEndpoint } from './security';
 import { discover, type CredentialConnection } from './providers';
 import { Runtime, publicTask, type TaskRow } from './runtime';
+import { Memories, memorySchema, correctionSchema, actionSchema } from './memory';
 import { publicSearch, searchWeb, type SearchConfig } from './search';
 
 const string = z.string().trim().max(200);
@@ -296,28 +298,29 @@ export function createApp(store: Store, vault: Vault) {
       store.put('conversations', { ...c, assistantId: 'general' });
     res.json({ ok: true });
   });
-  app.get('/api/memories', (req, res) =>
+  const memories = new Memories(store);
+  app.get('/api/memories', (req, res) => {
+    const assistantId = z.string().min(1).parse(req.query.assistantId),
+      projectId = z.string().parse(req.query.projectId || '');
     res.json(
-      store
-        .all<Memory>('memories')
-        .filter(
-          (m) =>
-            m.assistantId === req.query.assistantId && m.projectId === (req.query.projectId || ''),
-        ),
+      memories.list(assistantId, projectId, typeof req.query.q === 'string' ? req.query.q : ''),
+    );
+  });
+  app.post('/api/memories', (req, res) =>
+    res.status(201).json(memories.create(memorySchema.parse(req.body))),
+  );
+  app.put('/api/memories/:id', (req, res) =>
+    res.json(memories.correct(req.params.id, correctionSchema.parse(req.body))),
+  );
+  app.post('/api/memories/:id/:action', (req, res) =>
+    res.json(
+      memories.action(
+        req.params.id,
+        z.enum(['confirm', 'revoke']).parse(req.params.action),
+        actionSchema.parse(req.body),
+      ),
     ),
   );
-  app.post('/api/memories', (req, res) => {
-    const b = z
-      .object({
-        assistantId: string.min(1),
-        projectId: string.default(''),
-        content: z.string().trim().min(1).max(4000),
-      })
-      .parse(req.body);
-    requireRow('assistants', b.assistantId);
-    if (b.projectId) requireRow('projects', b.projectId);
-    res.status(201).json(store.put('memories', { id: uid(), ...b, createdAt: now() }));
-  });
   app.delete('/api/memories/:id', (req, res) => {
     requireRow('memories', req.params.id);
     store.delete('memories', req.params.id);
@@ -343,6 +346,16 @@ export function createApp(store: Store, vault: Vault) {
     const conversation = requireRow<Conversation>('conversations', req.params.id),
       tasks = store.all<TaskRow>('tasks').filter((t) => t.conversationId === conversation.id),
       ids = new Set(tasks.map((t) => t.id));
+    const memoryReviews = [
+      ...new Set([conversation.assistantId, ...tasks.map((t) => t.assistantId)]),
+    ]
+      .map((assistantId) => ({
+        assistantId,
+        count: memories
+          .list(assistantId, conversation.projectId)
+          .filter((m) => m.status === 'candidate').length,
+      }))
+      .filter((r) => r.count > 0);
     res.json({
       conversation,
       messages: store
@@ -350,12 +363,18 @@ export function createApp(store: Store, vault: Vault) {
         .filter((m) => m.conversationId === conversation.id)
         .reverse(),
       tasks: tasks.map(publicTask),
+      records: store
+        .all<ExecutionRecord>('records')
+        .filter((r) => ids.has(r.taskId))
+        .reverse(),
       events: store
         .all<TaskEvent>('events')
         .filter((e) => ids.has(e.taskId))
         .reverse()
         .slice(-300),
       files: listFiles().filter((f) => f.conversationId === conversation.id),
+      memoryCandidates: memoryReviews.reduce((sum, r) => sum + r.count, 0),
+      memoryReviews,
       sources: store
         .all<WebSource>('sources')
         .filter((s) => s.conversationId === conversation.id)
@@ -402,6 +421,8 @@ export function createApp(store: Store, vault: Vault) {
           .map((t) => t.id),
       );
       for (const id of ids) store.delete('tasks', id);
+      for (const r of store.all<ExecutionRecord>('records').filter((r) => ids.has(r.taskId)))
+        store.delete('records', r.id);
       for (const source of store
         .all<WebSource>('sources')
         .filter((s) => s.conversationId === req.params.id))
@@ -464,7 +485,18 @@ export function createApp(store: Store, vault: Vault) {
   });
   app.get('/api/tasks/:id', (req, res) => {
     const task = requireRow<TaskRow>('tasks', req.params.id);
+    const ids = new Set([
+      task.id,
+      ...store
+        .all<TaskRow>('tasks')
+        .filter((t) => t.parentId === task.id)
+        .map((t) => t.id),
+    ]);
     res.json({
+      records: store
+        .all<ExecutionRecord>('records')
+        .filter((r) => ids.has(r.taskId))
+        .reverse(),
       task: publicTask(task),
       children: store
         .all<TaskRow>('tasks')
@@ -567,9 +599,11 @@ export function createApp(store: Store, vault: Vault) {
       exportedAt: now(),
       projects: store.all('projects'),
       assistants: store.all('assistants'),
-      memories: store.all('memories'),
+      memories: store.all<Memory>('memories').map((m) => memories.view(m)),
       conversations: store.all('conversations'),
       messages: store.all('messages'),
+      tasks: store.all<TaskRow>('tasks').map(publicTask),
+      records: store.all<ExecutionRecord>('records'),
       files: store.all('files'),
       sources: store.all('sources'),
       search: publicSearch(store.get<SearchConfig>('settings', 'search')),

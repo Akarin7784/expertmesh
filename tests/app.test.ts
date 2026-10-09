@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import type { Server } from 'node:http';
-import type { Assistant, Conversation, FileRecord, Task } from '../shared/types';
+import type { Assistant, Conversation, FileRecord, Task, ExecutionRecord } from '../shared/types';
 import { createApp } from '../server/app';
 import { Store } from '../server/db';
 import { Vault, isPrivateAddress, validateEndpoint, secureFetch } from '../server/security';
@@ -126,6 +126,63 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
     const exported = await fetch(base + '/export').then((r) => r.text());
     assert.ok(!exported.includes('never-expose-key'));
     assert.ok(!exported.includes('encryptedKey'));
+    const candidateApi = (
+      await send('/memories', {
+        assistantId: 'general',
+        projectId: p.id,
+        content: '待确认资料偏好',
+        status: 'candidate',
+        reason: '用户资料为依据',
+        sources: [{ type: 'message', id: result.messages[0].id, excerpt: '请整理资料' }],
+      })
+    ).value;
+    assert.equal(candidateApi.status, 'candidate');
+    assert.equal(
+      (
+        await send('/memories', {
+          assistantId: 'writer',
+          projectId: p.id,
+          content: '越权来源',
+          sources: [{ type: 'message', id: result.messages[0].id, excerpt: '请整理资料' }],
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (await send('/memories/' + candidateApi.id + '/confirm', { revision: 1, reason: '核对原文' }))
+        .value.status,
+      'active',
+    );
+    assert.equal(
+      (
+        await send(
+          '/memories/' + candidateApi.id,
+          { revision: 1, content: '错误覆盖', reason: '旧页面', sources: [{ type: 'manual' }] },
+          'PUT',
+        )
+      ).status,
+      409,
+    );
+    assert.equal(
+      (
+        await send(
+          '/memories/' + candidateApi.id,
+          {
+            revision: 2,
+            content: '更正后的偏好',
+            reason: '明确更正',
+            sources: [{ type: 'manual' }],
+          },
+          'PUT',
+        )
+      ).value.revision,
+      3,
+    );
+    assert.equal(
+      (await send('/memories/' + candidateApi.id + '/revoke', { revision: 3, reason: '不再使用' }))
+        .value.status,
+      'revoked',
+    );
     // Child identity and project-specific memory do not inherit another assistant's private notes.
     await send('/memories', {
       assistantId: 'researcher',
@@ -145,8 +202,78 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
     const children = store.all<TaskRow>('tasks').filter((t) => t.parentId === delegated.id);
     assert.equal(children.length, 1);
     assert.equal(children[0].assistantId, 'researcher');
-    assert.ok(children[0].config.system.includes('研究偏好唯一标记'));
-    assert.ok(!children[0].config.system.includes('写作私有标记'));
+    assert.equal(children[0].contract?.deliverable, '简明资料摘要');
+    assert.deepEqual(children[0].contract?.fileIds, []);
+    assert.equal(children[0].review?.decision, 'adopted');
+    assert.equal(children[0].review?.checks.length, children[0].contract?.criteria.length);
+    assert.ok(
+      !service.runtime
+        .available(children[0])
+        .some((x) => ['delegate_task', 'review_task'].includes(x.name)),
+    );
+    assert.ok(!service.runtime.files(children[0]).some((f) => f.id === own.id));
+    const parent = store.get<TaskRow>('tasks', delegated.id)!;
+    const invoke = (name: string, args: unknown) =>
+      service.runtime.tool(
+        parent,
+        { id: 'invalid-contract', name, arguments: JSON.stringify(args) },
+        new AbortController().signal,
+      );
+    await assert.rejects(
+      invoke('delegate_task', { assistant_id: 'researcher', goal: '缺少契约' }),
+      /契约不完整/,
+    );
+    const contractArgs = {
+      assistant_id: 'researcher',
+      goal: '独立工作',
+      input: '输入说明',
+      file_ids: [other.id],
+      deliverable: '摘要',
+      criteria: ['有证据'],
+      dependencies: [],
+    };
+    await assert.rejects(invoke('delegate_task', contractArgs), /文件/);
+    await assert.rejects(
+      invoke('delegate_task', { ...contractArgs, file_ids: [], dependencies: ['unrelated'] }),
+      /依赖/,
+    );
+    await assert.rejects(
+      invoke('review_task', {
+        task_id: children[0].id,
+        decision: 'adopted',
+        reason: '测试',
+        checks: [{ index: 1, passed: true, evidence: '错误索引' }],
+      }),
+      /每条验收/,
+    );
+    await assert.rejects(
+      invoke('review_task', {
+        task_id: children[0].id,
+        decision: 'adopted',
+        reason: '测试',
+        checks: [{ index: 0, passed: false, evidence: '不满足' }],
+      }),
+      /不能采用/,
+    );
+    const execution = (await send('/tasks/' + delegated.id)).value.records as ExecutionRecord[];
+    assert.ok(execution.some((r) => r.taskId === children[0].id && r.kind === 'model'));
+    assert.ok(execution.some((r) => r.name === 'review_task' && r.status === 'succeeded'));
+    assert.ok(
+      execution.every(
+        (r) => r.status === 'succeeded' && r.durationMs !== null && r.costUsd === null,
+      ),
+    );
+    assert.ok(
+      execution
+        .filter((r) => r.kind === 'model')
+        .every((r) => r.usage?.input === 100 && r.usage.output === 20),
+    );
+    assert.ok(
+      mock.requests.filter((r) => r.messages).every((r) => r.stream_options?.include_usage),
+    );
+
+    assert.ok(service.runtime.memorySystem(children[0]).includes('研究偏好唯一标记'));
+    assert.ok(!service.runtime.memorySystem(children[0]).includes('写作私有标记'));
     // Opt-in web tools are inherited by children; saved sources contain no credentials.
     const searchSettings = {
       provider: 'tavily',
@@ -258,6 +385,11 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
       .map((f) => f.id);
     assert.ok(before.every((id) => after.includes(id)));
     assert.equal(after.filter((id) => id.endsWith('write-1')).length, 1);
+    const resumedRecords = (await send('/tasks/' + slowTask.id)).value.records as ExecutionRecord[];
+    assert.ok(resumedRecords.some((r) => r.kind === 'model' && r.status === 'interrupted'));
+    assert.equal(resumedRecords.filter((r) => r.name === 'write_artifact' && !r.cached).length, 1);
+    assert.ok(resumedRecords.filter((r) => r.kind === 'execution').length >= 2);
+
     const failure = (await send('/conversations', {})).value;
     const failing = (
       await send('/conversations/' + failure.id + '/messages', {
@@ -289,6 +421,7 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
     assert.ok(!readFileSync(resolve(dir, 'test.db')).includes(Buffer.from('never-expose-key')));
     assert.equal((await send('/conversations/' + convo.id, undefined, 'DELETE')).status, 200);
     assert.ok(!store.all<TaskRow>('tasks').some((t) => t.conversationId === convo.id));
+    assert.ok(!store.all<ExecutionRecord>('records').some((r) => r.taskId === task.id));
     assert.ok(store.get('files', own.id));
   } finally {
     await stop();

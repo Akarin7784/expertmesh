@@ -29,12 +29,13 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
+  ExecutionRecord,
   Assistant,
   Bootstrap,
   Connection,
   Conversation,
   FileRecord,
-  Memory,
+  MemorySource,
   Model,
   Project,
   Task,
@@ -44,12 +45,16 @@ import type {
 import { providers } from '../shared/types';
 import { api, bootstrap, post, put, remove, type Thread } from './api';
 import { Logo } from './Logo';
+import { MemoryPanel, MemoryCapture } from './MemoryPanel';
+import { Select } from './Select';
+import { ExecutionDetails } from './ExecutionDetails';
 
 type Page = 'chat' | 'tasks' | 'projects' | 'assistants' | 'files' | 'settings';
 type Modal =
   | { kind: 'connection'; value?: Connection }
   | { kind: 'project'; value?: Project }
   | { kind: 'assistant'; value?: Assistant }
+  | { kind: 'memory'; assistantId: string; projectId: string; messageId: string; original: string }
   | { kind: 'confirm'; title: string; description: string; action: () => Promise<unknown> }
   | null;
 const empty: Bootstrap = {
@@ -169,7 +174,7 @@ function ConnectionEditor({
       >
         <label>
           服务商
-          <select
+          <Select
             aria-label="服务商"
             value={provider}
             disabled={!!value}
@@ -186,7 +191,7 @@ function ConnectionEditor({
                 {p.name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label>
           连接名称
@@ -366,7 +371,7 @@ function ModelPicker({
   id?: string;
 }) {
   return (
-    <select id={id} aria-label="选择模型" value={value} onChange={(e) => onChange(e.target.value)}>
+    <Select id={id} aria-label="选择模型" value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="" disabled>
         选择模型
       </option>
@@ -379,7 +384,7 @@ function ModelPicker({
           ))}
         </optgroup>
       ))}
-    </select>
+    </Select>
   );
 }
 function AssistantEditor({
@@ -389,6 +394,7 @@ function AssistantEditor({
   onSave,
   onClose,
   onError,
+  onSource,
 }: {
   value?: Assistant;
   data: Bootstrap;
@@ -396,6 +402,7 @@ function AssistantEditor({
   onSave: (body: unknown, id?: string) => Promise<void>;
   onClose: () => void;
   onError: (error: string) => void;
+  onSource: (source: MemorySource) => void;
 }) {
   const [name, setName] = useState(value?.name || ''),
     [description, setDescription] = useState(value?.description || ''),
@@ -403,17 +410,7 @@ function AssistantEditor({
     [model, setModel] = useState(value?.model || ''),
     [tools, setTools] = useState(value?.tools ?? true),
     [saving, setSaving] = useState(false),
-    [error, setError] = useState(''),
-    [memories, setMemories] = useState<Memory[]>([]),
-    [memory, setMemory] = useState('');
-  useEffect(() => {
-    if (value)
-      api<Memory[]>(
-        `/memories?assistantId=${encodeURIComponent(value.id)}&projectId=${encodeURIComponent(projectId)}`,
-      )
-        .then(setMemories)
-        .catch((e) => onError(e.message));
-  }, [value?.id, projectId]);
+    [error, setError] = useState('');
   return (
     <Dialog title={value ? '编辑助手' : '创建助手'} onClose={onClose}>
       <form
@@ -454,7 +451,7 @@ function AssistantEditor({
         </label>
         <label>
           默认模型
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
+          <Select value={model} onChange={(e) => setModel(e.target.value)}>
             <option value="">跟随对话选择</option>
             {data.connections.map((c) => (
               <optgroup key={c.id} label={c.name}>
@@ -465,7 +462,7 @@ function AssistantEditor({
                 ))}
               </optgroup>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="check-label">
           <input type="checkbox" checked={tools} onChange={(e) => setTools(e.target.checked)} />
@@ -474,62 +471,9 @@ function AssistantEditor({
         {value && (
           <details>
             <summary>
-              记住我的偏好 · {data.projects.find((p) => p.id === projectId)?.name || '个人空间'}
+              记忆 · {data.projects.find((p) => p.id === projectId)?.name || '个人空间'}
             </summary>
-            <div className="memory-list">
-              {memories.map((m) => (
-                <div className="memory-row" key={m.id}>
-                  <span>{m.content}</span>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="删除偏好"
-                    onClick={async () => {
-                      try {
-                        await remove('/memories/' + m.id);
-                        setMemories(memories.filter((x) => x.id !== m.id));
-                      } catch (e) {
-                        setError((e as Error).message);
-                      }
-                    }}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <label>
-              新增偏好
-              <textarea
-                rows={2}
-                value={memory}
-                maxLength={4000}
-                onChange={(e) => setMemory(e.target.value)}
-                placeholder="例如：回答时先给结论"
-              />
-            </label>
-            <button
-              type="button"
-              disabled={!memory.trim() || saving}
-              onClick={async () => {
-                setSaving(true);
-                try {
-                  const m = await post<Memory>('/memories', {
-                    assistantId: value.id,
-                    projectId,
-                    content: memory,
-                  });
-                  setMemories([...memories, m]);
-                  setMemory('');
-                } catch (e) {
-                  setError((e as Error).message);
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              保存偏好
-            </button>
+            <MemoryPanel assistantId={value.id} projectId={projectId} onSource={onSource} />
           </details>
         )}
         {error && (
@@ -608,7 +552,7 @@ function SearchSettingsPanel({
       >
         <label>
           搜索服务
-          <select
+          <Select
             aria-label="搜索服务"
             value={provider}
             onChange={(e) => {
@@ -622,7 +566,7 @@ function SearchSettingsPanel({
           >
             <option value="tavily">Tavily</option>
             <option value="searxng">SearXNG</option>
-          </select>
+          </Select>
         </label>
         <label>
           搜索服务地址
@@ -719,6 +663,7 @@ function TaskCard({
   task,
   children,
   events,
+  records,
   files,
   onControl,
   onOpen,
@@ -726,6 +671,7 @@ function TaskCard({
 }: {
   task: Task;
   children: Task[];
+  records: ExecutionRecord[];
   events: TaskEvent[];
   files: FileRecord[];
   onControl: (id: string, action: string) => void;
@@ -767,6 +713,7 @@ function TaskCard({
         </div>
       </div>
       {task.error && <p className="error">{task.error}</p>}
+      <ExecutionDetails task={task} children={children} records={records} />
       {files.length > 0 && (
         <div className="artifact-list">
           {files.map((f) => (
@@ -825,7 +772,10 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [filter, setFilter] = useState('all'),
     [taskDetails, setTaskDetails] = useState<
-      Record<string, { children: Task[]; events: TaskEvent[]; files: FileRecord[] }>
+      Record<
+        string,
+        { children: Task[]; events: TaskEvent[]; files: FileRecord[]; records: ExecutionRecord[] }
+      >
     >({}),
     [testing, setTesting] = useState(''),
     [discovered, setDiscovered] = useState<Record<string, string[]>>({}),
@@ -895,7 +845,12 @@ export default function App() {
       try {
         const values = await Promise.all(
           data.tasks.map((t) =>
-            api<{ children: Task[]; events: TaskEvent[]; files: FileRecord[] }>('/tasks/' + t.id),
+            api<{
+              children: Task[];
+              events: TaskEvent[];
+              files: FileRecord[];
+              records: ExecutionRecord[];
+            }>('/tasks/' + t.id),
           ),
         );
         if (live) setTaskDetails(Object.fromEntries(data.tasks.map((t, i) => [t.id, values[i]])));
@@ -1115,14 +1070,14 @@ export default function App() {
           >
             {uploading ? <LoaderCircle className="spin" size={18} /> : <Paperclip size={18} />}
           </button>
-          <select
+          <Select
             aria-label="工作模式"
             value={mode}
             onChange={(e) => setMode(e.target.value as 'chat' | 'task')}
           >
             <option value="chat">对话</option>
             <option value="task">执行任务</option>
-          </select>
+          </Select>
           <button
             className={'web-toggle ' + (web ? 'is-on' : '')}
             aria-label="联网搜索"
@@ -1342,13 +1297,55 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="thread">
+                    {thread.memoryCandidates ? (
+                      <div className="memory-notice">
+                        <span>{thread.memoryCandidates} 条记忆等待确认</span>
+                        {(
+                          thread.memoryReviews || [
+                            {
+                              assistantId: thread.conversation.assistantId,
+                              count: thread.memoryCandidates,
+                            },
+                          ]
+                        ).map((review) => (
+                          <button
+                            key={review.assistantId}
+                            onClick={() => {
+                              setProject(thread.conversation.projectId);
+                              setModal({
+                                kind: 'assistant',
+                                value: data.assistants.find((a) => a.id === review.assistantId),
+                              });
+                            }}
+                          >
+                            {(thread.memoryReviews?.length || 1) > 1
+                              ? `查看${data.assistants.find((a) => a.id === review.assistantId)?.name || '助手'}记忆`
+                              : '查看记忆'}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="messages">
                       {thread.messages.map((m) => (
-                        <article key={m.id} className={'message ' + m.role}>
+                        <article id={'message-' + m.id} key={m.id} className={'message ' + m.role}>
                           {m.role === 'user' ? (
                             <>
                               <div className="user-bubble">{m.content}</div>
                               <div className="user-actions">
+                                <button
+                                  className="text-button"
+                                  onClick={() =>
+                                    setModal({
+                                      kind: 'memory',
+                                      assistantId: thread.conversation.assistantId,
+                                      projectId: thread.conversation.projectId,
+                                      messageId: m.id,
+                                      original: m.content,
+                                    })
+                                  }
+                                >
+                                  记住
+                                </button>
                                 <button
                                   className="icon-button"
                                   aria-label="编辑并重发问题"
@@ -1396,6 +1393,22 @@ export default function App() {
                               )}
                               {m.content && (
                                 <div className="answer-actions">
+                                  {m.status === 'completed' && (
+                                    <button
+                                      className="text-button"
+                                      onClick={() =>
+                                        setModal({
+                                          kind: 'memory',
+                                          assistantId: thread.conversation.assistantId,
+                                          projectId: thread.conversation.projectId,
+                                          messageId: m.id,
+                                          original: m.content,
+                                        })
+                                      }
+                                    >
+                                      记住
+                                    </button>
+                                  )}
                                   <button
                                     className="icon-button"
                                     aria-label="复制回答"
@@ -1491,12 +1504,15 @@ export default function App() {
                                   (t) =>
                                     t.id === m.taskId &&
                                     !t.parentId &&
-                                    (t.mode === 'task' || t.status !== 'completed'),
+                                    (t.mode === 'task' ||
+                                      t.status !== 'completed' ||
+                                      thread.tasks.some((c) => c.parentId === t.id)),
                                 )
                                 .map((t) => (
                                   <TaskCard
                                     key={t.id}
                                     task={t}
+                                    records={thread.records || []}
                                     children={thread.tasks.filter((c) => c.parentId === t.id)}
                                     events={thread.events.filter((e) => e.taskId === t.id)}
                                     files={thread.files.filter((f) => f.taskId === t.id)}
@@ -1572,6 +1588,7 @@ export default function App() {
                       <TaskCard
                         key={t.id}
                         task={t}
+                        records={taskDetails[t.id]?.records || []}
                         children={taskDetails[t.id]?.children || []}
                         events={taskDetails[t.id]?.events || []}
                         files={taskDetails[t.id]?.files || []}
@@ -1713,7 +1730,7 @@ export default function App() {
                     </button>
                   </div>
                   <div className="file-filter">
-                    <select
+                    <Select
                       aria-label="文件所属项目"
                       value={projectId}
                       onChange={(e) => setProject(e.target.value)}
@@ -1724,7 +1741,7 @@ export default function App() {
                           {p.name}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                     <span className="hint">文本、Markdown、CSV 与代码 · 每个文件最大 2 MB</span>
                   </div>
                   <div className="file-list">
@@ -1903,11 +1920,11 @@ export default function App() {
                     <h2>外观</h2>
                     <div className="setting-row">
                       <label htmlFor="theme">显示模式</label>
-                      <select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)}>
+                      <Select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)}>
                         <option value="system">跟随系统</option>
                         <option value="light">浅色</option>
                         <option value="dark">深色</option>
-                      </select>
+                      </Select>
                     </div>
                   </section>
                   <section className="settings-section">
@@ -1955,9 +1972,39 @@ export default function App() {
           data={data}
           projectId={projectId}
           onError={setError}
+          onSource={async (source) => {
+            try {
+              setModal(null);
+              if (source.type === 'file') {
+                await openFile(source.id);
+              } else if (source.conversationId) {
+                await openChat(source.conversationId);
+                setTimeout(
+                  () =>
+                    document
+                      .getElementById('message-' + source.id)
+                      ?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+                  200,
+                );
+              }
+            } catch (e) {
+              showError(e);
+            }
+          }}
           onClose={() => setModal(null)}
           onSave={(body, id) => save('/assistants', body, id)}
         />
+      )}
+      {modal?.kind === 'memory' && (
+        <Dialog title="保存为记忆" onClose={() => setModal(null)}>
+          <MemoryCapture
+            {...modal}
+            onSaved={() => {
+              setModal(null);
+              setNotice('记忆已保存，可在助手设置中更正或撤销');
+            }}
+          />
+        </Dialog>
       )}
       {modal?.kind === 'confirm' && (
         <Dialog title={modal.title} onClose={() => setModal(null)}>
