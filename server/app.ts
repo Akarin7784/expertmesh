@@ -3,6 +3,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import { basename, extname, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import type {
   ExecutionRecord,
   Assistant,
@@ -20,6 +21,9 @@ import { Store, now, uid } from './db';
 import { Vault, validateEndpoint } from './security';
 import { discover, type CredentialConnection } from './providers';
 import { Runtime, publicTask, type TaskRow } from './runtime';
+import { Budgets, budgetSchema, defaultBudget } from './budget';
+import { Workspaces } from './workspaces';
+import { sandboxSchema } from './sandbox';
 import { Mcp } from './mcp';
 import { Memories, memorySchema, correctionSchema, actionSchema } from './memory';
 import { publicSearch, searchWeb, type SearchConfig } from './search';
@@ -63,7 +67,11 @@ function publicConnection(c: CredentialConnection): Connection {
   return { ...safe, hasKey: !!encryptedKey };
 }
 const fileMeta = (f: FileRecord) => ({ ...f, content: '' });
-export function createApp(store: Store, vault: Vault) {
+export function createApp(
+  store: Store,
+  vault: Vault,
+  options: { sessionToken?: string; distDir?: string } = {},
+) {
   const app = express(),
     runtime = new Runtime(store, vault),
     mcp = new Mcp(store, vault);
@@ -73,6 +81,12 @@ export function createApp(store: Store, vault: Vault) {
     res.setHeader('Referrer-Policy', 'no-referrer');
     if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(req.hostname))
       return res.status(403).json({ error: '请通过本机地址访问' });
+    if (options.sessionToken) {
+      const supplied = Buffer.from(req.get('X-ExpertMesh-Session') || ''),
+        expected = Buffer.from(options.sessionToken);
+      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
+        return res.status(403).json({ error: '请通过桌面应用访问' });
+    }
     if (req.path.startsWith('/api')) {
       res.setHeader('Cache-Control', 'no-store');
       const origin = req.headers.origin;
@@ -82,7 +96,11 @@ export function createApp(store: Store, vault: Vault) {
           if (
             !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) ||
             !['http:', 'https:'].includes(u.protocol) ||
-            ![String(process.env.PORT || 3001), '5173'].includes(u.port)
+            !(
+              options.sessionToken
+                ? [String(req.socket.localPort)]
+                : [String(req.socket.localPort), '5173']
+            ).includes(u.port)
           )
             return res.status(403).json({ error: '请求来源不允许' });
         } catch {
@@ -131,6 +149,111 @@ export function createApp(store: Store, vault: Vault) {
         store.get<{ id: string; value: string }>('settings', 'defaultModel')?.value || '',
     }),
   );
+  const workspaces = new Workspaces(store);
+  app.get('/api/settings/budget', (_req, res) =>
+    res.json(store.get<any>('settings', 'budget')?.limits || defaultBudget()),
+  );
+  app.put('/api/settings/budget', (req, res) => {
+    const limits = budgetSchema.parse(req.body);
+    store.put('settings', { id: 'budget', limits });
+    res.json(limits);
+  });
+  app.put('/api/tasks/:id/budget', (req, res) => {
+    const task = requireRow<TaskRow>('tasks', req.params.id);
+    if (task.parentId || !['paused', 'failed'].includes(task.status))
+      throw Error('请先暂停主任务再调整预算');
+    res.json(new Budgets(store).change(task.id, budgetSchema.parse(req.body)));
+  });
+  app.get('/api/workspaces', (_req, res) => res.json(workspaces.list()));
+  app.post('/api/workspaces', (req, res) => res.status(201).json(workspaces.create(req.body)));
+  app.delete('/api/workspaces/:id', (req, res) => {
+    requireRow('workspaces', req.params.id);
+    store.delete('workspaces', req.params.id);
+    for (const g of store
+      .all<any>('workspace_grants')
+      .filter((g) => g.workspaceId === req.params.id))
+      store.delete('workspace_grants', g.id);
+    res.json({ ok: true });
+  });
+  app.get('/api/workspace-grants', (req, res) =>
+    res.json(
+      workspaces.grants(
+        z.string().min(1).parse(req.query.assistantId),
+        z.string().parse(req.query.projectId || ''),
+      ),
+    ),
+  );
+  app.put('/api/workspace-grants', (req, res) => {
+    const b = z
+      .object({
+        workspaceId: z.string(),
+        assistantId: z.string(),
+        projectId: z.string().default(''),
+        enabled: z.boolean(),
+      })
+      .strict()
+      .parse(req.body);
+    workspaces.grant(b.workspaceId, b.assistantId, b.projectId, b.enabled);
+    res.json({ ok: true });
+  });
+  app.get('/api/workspaces/:id/files', (req, res) =>
+    res.json(
+      workspaces.files(
+        req.params.id,
+        z.string().parse(req.query.assistantId),
+        z.string().parse(req.query.projectId || ''),
+      ),
+    ),
+  );
+  app.get('/api/workspaces/:id/read', (req, res) =>
+    res.json(
+      workspaces.read(
+        req.params.id,
+        z.string().min(1).max(2000).parse(req.query.path),
+        z.string().parse(req.query.assistantId),
+        z.string().parse(req.query.projectId || ''),
+      ),
+    ),
+  );
+  app.get('/api/sandbox', async (_req, res) => res.json(await runtime.sandbox.status()));
+  app.post('/api/sandbox/prepare', async (_req, res) => res.json(await runtime.sandbox.prepare()));
+  app.put('/api/sandbox', (req, res) => {
+    const b = sandboxSchema.parse(req.body);
+    const old = runtime.sandbox.settings();
+    if (b.enabled && (!old.images.python || !old.images.javascript))
+      throw Error('请先准备并检查环境');
+    store.put('settings', { id: 'sandbox', ...old, ...b });
+    res.json(runtime.sandbox.settings());
+  });
+  app.post('/api/sandbox/test', async (req, res) => {
+    const b = z
+      .object({ runtime: z.enum(['python', 'javascript']) })
+      .strict()
+      .parse(req.body);
+    res.json(
+      await runtime.sandbox.run(
+        'manual',
+        'general',
+        '',
+        {
+          runtime: b.runtime,
+          code: b.runtime === 'python' ? "print('代码执行正常')" : "console.log('代码执行正常')",
+        },
+        new AbortController().signal,
+      ),
+    );
+  });
+  app.get('/api/tasks/:id/sandbox-runs', (req, res) => {
+    const t = requireRow<TaskRow>('tasks', req.params.id),
+      ids = new Set([
+        t.id,
+        ...store
+          .all<TaskRow>('tasks')
+          .filter((c) => c.parentId === t.id)
+          .map((c) => c.id),
+      ]);
+    res.json(store.all<any>('sandbox_runs').filter((r) => ids.has(r.taskId)));
+  });
   app.put('/api/settings/default-model', (req, res) => {
     const value = z.string().max(500).parse(req.body.value);
     if (value) {
@@ -239,6 +362,40 @@ export function createApp(store: Store, vault: Vault) {
     const c = requireRow<CredentialConnection>('connections', req.params.id);
     res.json({ models: await discover(c, vault.decrypt(c.encryptedKey)) });
   });
+  app.post('/api/connections/discover', async (req, res) => {
+    const input = connectionSchema
+      .omit({ name: true, models: true })
+      .extend({ connectionId: z.string().min(1).optional() })
+      .strict()
+      .parse(req.body);
+    const existing = input.connectionId
+      ? requireRow<CredentialConnection>('connections', input.connectionId)
+      : undefined;
+    const baseUrl = await validateEndpoint(
+      input.baseUrl || providers.find((p) => p.id === input.provider)!.baseUrl,
+      input.allowLocal,
+    );
+    if (
+      existing &&
+      existing.encryptedKey &&
+      (existing.baseUrl !== baseUrl || existing.provider !== input.provider) &&
+      !input.apiKey
+    )
+      throw Error('修改服务地址或服务商时请重新填写密钥');
+    const key = input.apiKey || (existing ? vault.decrypt(existing.encryptedKey) : '');
+    if (input.provider !== 'ollama' && !key) throw Error('请填写 API Key');
+    const connection: Connection = {
+      id: existing?.id || 'preview',
+      name: existing?.name || input.provider,
+      provider: input.provider,
+      baseUrl,
+      allowLocal: input.allowLocal,
+      hasKey: !!key,
+      models: [],
+      createdAt: existing?.createdAt || now(),
+    };
+    res.json({ models: await discover(connection, key) });
+  });
   app.post('/api/projects', (req, res) =>
     res
       .status(201)
@@ -259,6 +416,10 @@ export function createApp(store: Store, vault: Vault) {
     assertIdle((t) => t.projectId === req.params.id);
     store.transaction(() => {
       store.delete('projects', req.params.id);
+      for (const g of store
+        .all<any>('workspace_grants')
+        .filter((g) => g.projectId === req.params.id))
+        store.delete('workspace_grants', g.id);
       for (const g of store
         .all<{ id: string; projectId: string }>('tool_grants')
         .filter((g) => g.projectId === req.params.id))
@@ -297,6 +458,10 @@ export function createApp(store: Store, vault: Vault) {
     requireRow('assistants', req.params.id);
     assertIdle((t) => t.assistantId === req.params.id);
     store.delete('assistants', req.params.id);
+    for (const g of store
+      .all<any>('workspace_grants')
+      .filter((g) => g.assistantId === req.params.id))
+      store.delete('workspace_grants', g.id);
     for (const g of store
       .all<{ id: string; assistantId: string }>('tool_grants')
       .filter((g) => g.assistantId === req.params.id))
@@ -477,7 +642,12 @@ export function createApp(store: Store, vault: Vault) {
           .filter((t) => t.conversationId === req.params.id)
           .map((t) => t.id),
       );
-      for (const id of ids) store.delete('tasks', id);
+      for (const id of ids) {
+        store.delete('tasks', id);
+        store.delete('budgets', id);
+      }
+      for (const r of store.all<any>('sandbox_runs').filter((r) => ids.has(r.taskId)))
+        store.delete('sandbox_runs', r.id);
       for (const r of store.all<ExecutionRecord>('records').filter((r) => ids.has(r.taskId)))
         store.delete('records', r.id);
       for (const source of store
@@ -507,6 +677,7 @@ export function createApp(store: Store, vault: Vault) {
         mode: z.enum(['chat', 'task']).default('chat'),
         fileIds: z.array(string).max(10).default([]),
         web: z.boolean().default(false),
+        budget: budgetSchema.optional(),
       })
       .parse(req.body);
     const connection = requireRow<CredentialConnection>('connections', b.connectionId),
@@ -537,6 +708,7 @@ export function createApp(store: Store, vault: Vault) {
       mode: b.mode,
       fileIds: b.fileIds,
       search: b.web ? search : undefined,
+      budget: b.budget,
     });
     res.status(202).json(task);
   });
@@ -661,6 +833,10 @@ export function createApp(store: Store, vault: Vault) {
       messages: store.all('messages'),
       tasks: store.all<TaskRow>('tasks').map(publicTask),
       records: store.all<ExecutionRecord>('records'),
+      budgets: store.all('budgets'),
+      sandboxRuns: store.all('sandbox_runs'),
+      workspaces: workspaces.list(),
+      workspaceGrants: store.all('workspace_grants'),
       files: store.all('files'),
       sources: store.all('sources'),
       search: publicSearch(store.get<SearchConfig>('settings', 'search')),
@@ -669,7 +845,7 @@ export function createApp(store: Store, vault: Vault) {
       toolGrants: store.all('tool_grants'),
     });
   });
-  const dist = resolve('dist');
+  const dist = resolve(options.distDir || 'dist');
   if (existsSync(dist)) {
     app.use(
       express.static(dist, {

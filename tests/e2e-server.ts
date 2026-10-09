@@ -9,7 +9,9 @@ const dir = mkdtempSync(resolve(tmpdir(), 'expertmesh-e2e-'));
 const mock = await mockProvider(3901),
   store = new Store(resolve(dir, 'test.db')),
   { app, runtime } = createApp(store, new Vault(dir));
-const server = app.listen(3001, '127.0.0.1', () => console.log('E2E API ready'));
+const server = app.listen(Number(process.env.E2E_API_PORT || 3001), '127.0.0.1', () =>
+  console.log('E2E API ready'),
+);
 async function stop() {
   await runtime.shutdown();
   server.closeAllConnections();

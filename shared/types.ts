@@ -48,7 +48,7 @@ export interface Memory {
 }
 export type MemoryStatus = 'candidate' | 'active' | 'revoked' | 'stale';
 export interface MemorySource {
-  type: 'manual' | 'message' | 'file' | 'web' | 'legacy';
+  type: 'manual' | 'message' | 'file' | 'web' | 'workspace' | 'legacy';
   id: string;
   title: string;
   excerpt: string;
@@ -103,6 +103,7 @@ export interface TaskEvent {
   createdAt: string;
 }
 export interface Task {
+  budget?: BudgetState;
   contract?: TaskContract;
   review?: TaskReview;
   id: string;
@@ -151,6 +152,7 @@ export interface ExecutionRecord {
   provider: Provider;
   callId?: string;
   displayName?: string;
+  memories?: MemoryExposure[];
   cached: boolean;
   status: 'running' | 'succeeded' | 'failed' | 'interrupted';
   startedAt: string;
@@ -233,3 +235,62 @@ export const providers: { id: Provider; name: string; baseUrl: string }[] = [
   { id: 'ollama', name: 'Ollama', baseUrl: 'http://localhost:11434' },
   { id: 'compatible', name: '自定义兼容服务', baseUrl: '' },
 ];
+
+export interface BudgetLimits {
+  modelCalls: number;
+  toolCalls: number;
+  tokens: number;
+  contextChars: number;
+  activeSeconds: number;
+  sandboxRuns: number;
+}
+export interface BudgetState {
+  id: string;
+  limits: BudgetLimits;
+  modelCalls: number;
+  toolCalls: number;
+  knownTokens: number;
+  unknownUsage: number;
+  elapsedMs: number;
+  sandboxRuns: number;
+  stoppedReason?: string;
+}
+export interface MemoryExposure {
+  memoryId: string;
+  revision: number;
+  content: string;
+  sourceTitles: string[];
+  method: 'context' | 'search';
+}
+export interface Workspace {
+  id: string;
+  name: string;
+  path: string;
+  identity: string;
+  enabled: boolean;
+  createdAt: string;
+}
+export interface WorkspaceGrant {
+  id: string;
+  workspaceId: string;
+  assistantId: string;
+  projectId: string;
+}
+export interface SandboxSettings {
+  enabled: boolean;
+  timeoutSeconds: number;
+  images: { python?: string; javascript?: string };
+}
+export interface SandboxRun {
+  id: string;
+  taskId: string;
+  runtime: 'python' | 'javascript';
+  image: string;
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  startedAt: string;
+  endedAt?: string;
+  workspaceFiles: { workspaceId: string; path: string; hash: string }[];
+}

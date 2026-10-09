@@ -4,6 +4,7 @@ const chapters = [
   { id: 'models', title: '模型与服务商', note: '选择与你一起工作的模型。' },
   { id: 'tools', title: '工具与权限', note: '连接资料，让每位助手拥有合适的工具。' },
   { id: 'search', title: '联网搜索', note: '为对话与研究找到更多来源。' },
+  { id: 'execution', title: '执行与工作区', note: '安排任务额度，连接项目与执行环境。' },
   { id: 'appearance', title: '阅读与外观', note: '选择适合此刻的阅读环境。' },
   { id: 'data', title: '数据管理', note: '保存你的对话、资料与工作成果。' },
 ] as const;
@@ -18,7 +19,7 @@ export function SettingsBook({ children }: { children: ReactNode }) {
   return (
     <div className="page-inner settings-page settings-book">
       <header className="book-heading">
-        <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+        <p className="book-eyebrow">工作手记 · 05 / PREFERENCES</p>
         <h1>设置</h1>
         <p>按照你的习惯，安排模型、工具与阅读方式。</p>
       </header>

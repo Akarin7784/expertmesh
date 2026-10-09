@@ -36,7 +36,17 @@ export async function mockProvider(port = 0) {
     }
     if (req.url === '/v1/models') {
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ data: [{ id: 'fixture-model' }, { id: 'fixture-text' }] }));
+      res.end(
+        JSON.stringify({
+          data: [
+            { id: 'fixture-model' },
+            { id: 'fixture-text' },
+            { id: 'fixture-model' },
+            { id: 12 },
+            { id: 'bad::model' },
+          ],
+        }),
+      );
       return;
     }
     if (req.url !== '/v1/chat/completions') {

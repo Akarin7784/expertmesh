@@ -106,7 +106,7 @@ export function MemoryPanel({
                     <a href={s.url} target="_blank" rel="noreferrer">
                       查看网页
                     </a>
-                  ) : ['message', 'file'].includes(s.type) ? (
+                  ) : ['message', 'file', 'workspace'].includes(s.type) ? (
                     <button type="button" className="text-button" onClick={() => onSource(s)}>
                       查看原文
                     </button>

@@ -1,4 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 async function select(page: Page, label: string, value: string) {
   await page.getByLabel(label, { exact: true }).click();
   await page.locator(`[role=option][data-value="${value}"]`).click();
@@ -15,7 +18,9 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await editor.fill(
     Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行：整理研究资料与主要观点。`).join('\n'),
   );
-  await expect.poll(() => editor.evaluate((e) => e.clientHeight)).toBe(264);
+  await expect.poll(() => editor.evaluate((e) => e.clientHeight)).toBeGreaterThan(96);
+  expect(await editor.evaluate((e) => e.clientHeight)).toBeLessThanOrEqual(264);
+  expect(await editor.evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true);
   await expect(editor).toHaveCSS('resize', 'none');
   await page.screenshot({ path: 'test-results/composer-writing.png', fullPage: true });
   await editor.fill('请整理研究资料');
@@ -41,7 +46,14 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await page.getByLabel('API Key', { exact: false }).fill('test-secret');
   await page.getByLabel('服务地址').fill('http://127.0.0.1:3901/v1');
   await page.getByLabel('允许本地或内网服务').check();
-  await page.getByLabel('模型 ID 1', { exact: true }).fill('fixture-model');
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  await expect(page.getByText('已获取 2 个模型', { exact: true })).toBeVisible();
+  await page.getByLabel('搜索可用模型', { exact: true }).fill('fixture-model');
+  await page.getByLabel('选择模型 fixture-model', { exact: true }).check();
+  await page.getByRole('button', { name: '添加所选模型', exact: false }).click();
+  await expect(page.getByLabel('模型 ID 1', { exact: true })).toHaveValue('fixture-model');
+  await page.locator('.model-row').getByRole('checkbox').check();
+  await page.screenshot({ path: 'test-results/model-discovery.png', fullPage: true });
   await page.getByLabel('模型显示名称 1', { exact: true }).fill('测试模型');
   await page.getByRole('button', { name: '保存连接' }).click();
   await expect(page.getByLabel('选择模型')).toHaveText(/测试模型/);
@@ -63,7 +75,7 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.task-card .status')).toHaveText(/已完成/, { timeout: 20000 });
   await expect(page.locator('.markdown')).toContainText('协作已完成');
-  await page.locator('.execution-details summary').click();
+  await page.locator('.execution-details > summary').click();
   await expect(page.locator('.execution-details')).toContainText('费用未提供');
   await page.locator('.contract-details summary').click();
   await expect(page.locator('.contract-details')).toContainText('已采用');
@@ -101,6 +113,13 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
   await page.getByRole('button', { name: '保存助手' }).click();
   await expect(page.getByRole('heading', { name: '文案助手' })).toBeVisible();
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '编辑服务 测试服务', exact: true }).click();
+  await page.getByRole('button', { name: '获取可用模型', exact: true }).click();
+  await expect(page.getByLabel('选择模型 fixture-model', { exact: true })).toBeDisabled();
+  await page.getByLabel('选择模型 fixture-text', { exact: true }).check();
+  await page.getByRole('button', { name: '添加所选模型', exact: false }).click();
+  await page.getByRole('button', { name: '保存连接', exact: true }).click();
+  await expect(page.locator('.model-tags')).toContainText('fixture-text');
   await page.screenshot({ path: 'test-results/settings-book-models.png', fullPage: true });
   await page.getByRole('button', { name: '测试连接', exact: true }).click();
   await expect(page.getByText('连接成功，已获取模型列表')).toBeVisible();
@@ -205,6 +224,44 @@ test('onboarding, uploads, real API roundtrip, projects, assistants and responsi
     });
     await page.setViewportSize({ width: 1280, height: 900 });
   }
+  await page.getByRole('button', { name: '新对话', exact: true }).click();
+  await page
+    .getByRole('textbox', { name: '发送消息' })
+    .fill(
+      Array.from({ length: 80 }, (_, i) => `阅读位置检查 ${i + 1}：这是一段较长的对话资料。`).join(
+        '\n',
+      ),
+    );
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.locator('.markdown')).toContainText('整理完成', { timeout: 15000 });
+  const inputBounds = await page.locator('.chat-dock').boundingBox();
+  await page.locator('.chat-content').evaluate((area) => {
+    area.scrollTop = 0;
+    area.dispatchEvent(new Event('scroll'));
+  });
+  await expect(page.getByRole('button', { name: '回到最新', exact: true })).toBeVisible();
+  // Polling model/task updates must preserve the reader's history position.
+  await page.waitForTimeout(1200);
+  expect(await page.locator('.chat-content').evaluate((area) => area.scrollTop)).toBe(0);
+  expect((await page.locator('.chat-dock').boundingBox())!.y).toBe(inputBounds!.y);
+  await page.screenshot({ path: 'test-results/chat-feed-desktop.png' });
+  await page.getByRole('button', { name: '回到最新', exact: true }).click();
+  await expect
+    .poll(() =>
+      page
+        .locator('.chat-content')
+        .evaluate((area) => area.scrollHeight - area.scrollTop - area.clientHeight),
+    )
+    .toBeLessThan(2);
+  for (const width of [375, 320]) {
+    await page.setViewportSize({ width, height: 850 });
+    const dock = await page.locator('.chat-dock').boundingBox();
+    expect(dock!.y + dock!.height).toBeLessThanOrEqual(851);
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+  }
+  await page.screenshot({ path: 'test-results/chat-feed-mobile.png', animations: 'disabled' });
   expect(errors).toEqual([]);
 });
 
@@ -314,7 +371,7 @@ test('read-only MCP connection, scoped grants, runtime calls and revocation', as
   await page.getByRole('button', { name: '发送', exact: true }).click();
   await expect(page.locator('.markdown')).toContainText('可信工具资料', { timeout: 15000 });
   await expect(page.locator('.task-card .status')).toHaveText(/已完成/);
-  await page.locator('.execution-details summary').click();
+  await page.locator('.execution-details > summary').click();
   await expect(page.locator('.execution-details')).toContainText('研究资料工具 · fetch_notes');
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('tab', { name: '工具与权限', exact: true }).click();
@@ -335,4 +392,74 @@ test('read-only MCP connection, scoped grants, runtime calls and revocation', as
     fullPage: true,
     animations: 'disabled',
   });
+});
+
+test('execution settings, scoped workspace preview and budget pause/resume', async ({ page }) => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'mesh-ui-workspace-'));
+  writeFileSync(resolve(dir, 'acceptance.md'), '只读验收资料');
+  writeFileSync(resolve(dir, '.env'), 'secret=must-not-appear');
+  try {
+    await page.goto('/');
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
+    await page.getByLabel('模型调用次数', { exact: true }).fill('1');
+    await page.getByRole('button', { name: '保存默认预算', exact: true }).click();
+    await expect(page.getByText('新任务预算已保存', { exact: true })).toBeVisible();
+    await page.getByLabel('目录名称', { exact: true }).fill('验收目录');
+    await page.getByLabel('本地目录路径', { exact: true }).fill(dir);
+    await page.getByRole('button', { name: '连接目录', exact: true }).click();
+    const workspace = page.locator('.workspace-row').filter({ hasText: '验收目录' });
+    await expect(workspace.getByRole('button', { name: '查看文件' })).toBeDisabled();
+    await workspace.getByLabel('允许读取').check();
+    await workspace.getByRole('button', { name: '查看文件' }).click();
+    await expect(workspace.locator('pre')).toContainText('acceptance.md');
+    await expect(workspace.locator('pre')).not.toContainText('.env');
+    const entries = await (await page.request.get('/api/workspaces')).json();
+    const workspaceId = entries.find((w: any) => w.name === '验收目录').id;
+    const readUrl = `/api/workspaces/${workspaceId}/read?path=acceptance.md&assistantId=general&projectId=`;
+    expect((await (await page.request.get(readUrl)).json()).content).toBe('只读验收资料');
+    expect((await page.request.get(readUrl.replace('acceptance.md', '.env'))).ok()).toBe(false);
+    await page.screenshot({ path: 'test-results/execution-settings.png', fullPage: true });
+    await page.setViewportSize({ width: 375, height: 850 });
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+      .toBe(true);
+    await expect
+      .poll(() => page.locator('.sidebar').evaluate((e) => e.getBoundingClientRect().right))
+      .toBeLessThanOrEqual(0);
+    await page.screenshot({
+      path: 'test-results/execution-mobile.png',
+      fullPage: true,
+      animations: 'disabled',
+    });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.getByRole('button', { name: '新对话', exact: true }).click();
+    await page.getByRole('button', { name: '任务', exact: true }).click();
+    await page.getByRole('button', { name: '新建任务', exact: true }).click();
+    await page.getByRole('textbox', { name: '发送消息' }).fill('整理验收资料');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const card = page.locator('.task-card').filter({ hasText: '整理验收资料' }).first();
+    await expect(card.locator('.status').first()).toHaveText(/已暂停/, { timeout: 15000 });
+    await card.locator('.task-budget summary').click();
+    await expect(card.locator('.task-budget')).toContainText('已达到模型调用预算');
+    await card.getByRole('button', { name: '调整预算', exact: true }).click();
+    await card.getByLabel('模型调用次数', { exact: true }).fill('24');
+    await card.getByRole('button', { name: '保存任务预算', exact: true }).click();
+    await expect(card.getByText('预算已更新，可以继续任务')).toBeVisible();
+    await card.getByRole('button', { name: '继续', exact: true }).click();
+    await expect(card.locator('.status').first()).toHaveText(/已完成/, { timeout: 15000 });
+    await expect(card.locator('.task-budget summary')).toContainText('模型 3/24');
+    await page.screenshot({ path: 'test-results/budget-resumed.png', fullPage: true });
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
+    await workspace.getByLabel('允许读取').uncheck();
+    await expect(workspace.getByRole('button', { name: '查看文件' })).toBeDisabled();
+    expect((await page.request.get(readUrl)).ok()).toBe(false);
+    await workspace.getByRole('button', { name: '移除连接' }).click();
+    await expect(workspace).toHaveCount(0);
+    await page.getByLabel('模型调用次数', { exact: true }).fill('24');
+    await page.getByRole('button', { name: '保存默认预算', exact: true }).click();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

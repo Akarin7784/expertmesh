@@ -469,15 +469,52 @@ export async function discover(connection: Connection, key: string): Promise<str
     await res.body?.cancel();
     throw Error(`连接测试失败（HTTP ${res.status}），请检查密钥和地址`);
   }
-  const data = (await res.json()) as any;
+  if (!res.body) throw Error('服务未返回模型列表');
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let data: any;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 1024 * 1024) throw Error('模型列表响应超过 1 MB 限额');
+      chunks.push(value);
+    }
+    try {
+      data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      throw Error('模型列表响应不是有效 JSON');
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
   const list =
     p === 'ollama'
-      ? data.models?.map((x: any) => x.name)
+      ? data.models?.map((x: any) => x?.name)
       : p === 'gemini'
         ? data.models
-            ?.filter((x: any) => x.supportedGenerationMethods?.includes('generateContent'))
+            ?.filter(
+              (x: any) =>
+                typeof x?.name === 'string' &&
+                Array.isArray(x.supportedGenerationMethods) &&
+                x.supportedGenerationMethods.includes('generateContent'),
+            )
             .map((x: any) => x.name.replace(/^models\//, ''))
-        : data.data?.map((x: any) => x.id);
+        : data.data?.map((x: any) => x?.id);
   if (!Array.isArray(list)) throw Error('服务不支持模型列表发现，请手动填写模型 ID');
-  return list.slice(0, 200);
+  return [
+    ...new Set<string>(
+      list.filter(
+        (id: unknown): id is string =>
+          typeof id === 'string' &&
+          id.length > 0 &&
+          id.length <= 200 &&
+          !id.includes('::') &&
+          !/[\x00-\x1f\x7f]/.test(id) &&
+          (!key || !id.includes(key)),
+      ),
+    ),
+  ].slice(0, 200);
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowUp,
+  ArrowUpRight,
+  BookOpen,
   Check,
   ChevronDown,
   CirclePause,
@@ -48,6 +50,7 @@ import { ToolSettings } from './ToolSettings';
 import { SettingsBook, SettingsChapter } from './SettingsBook';
 import { MemoryPanel, MemoryCapture } from './MemoryPanel';
 import { Select } from './Select';
+import { ExecutionSettings, BudgetFields } from './ExecutionSettings';
 import { ExecutionDetails } from './ExecutionDetails';
 
 type Page = 'chat' | 'tasks' | 'projects' | 'assistants' | 'files' | 'settings';
@@ -141,7 +144,21 @@ function ConnectionEditor({
     [models, setModels] = useState<Model[]>(value?.models || [{ id: '', name: '', tools: true }]),
     [local, setLocal] = useState(value?.allowLocal || false),
     [saving, setSaving] = useState(false),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [discovering, setDiscovering] = useState(false),
+    [catalog, setCatalog] = useState<string[] | null>(null),
+    [chosen, setChosen] = useState<string[]>([]),
+    [query, setQuery] = useState(''),
+    [modelNotice, setModelNotice] = useState('');
+  const configuration = JSON.stringify([provider, baseUrl, key, local, value?.id]);
+  const latestConfiguration = useRef(configuration);
+  latestConfiguration.current = configuration;
+  useEffect(() => {
+    setCatalog(null);
+    setChosen([]);
+    setQuery('');
+    setModelNotice('');
+  }, [configuration]);
   return (
     <Dialog title={value ? '编辑模型服务' : '添加模型服务'} onClose={onClose}>
       <form
@@ -227,6 +244,41 @@ function ConnectionEditor({
           <span>模型</span>
           <button
             type="button"
+            className="secondary"
+            disabled={discovering || saving}
+            onClick={async () => {
+              setDiscovering(true);
+              setError('');
+              setModelNotice('');
+              try {
+                const result = await post<{ models: string[] }>('/connections/discover', {
+                  provider,
+                  baseUrl,
+                  apiKey: key,
+                  allowLocal: local,
+                  ...(value ? { connectionId: value.id } : {}),
+                });
+                if (latestConfiguration.current !== configuration) return;
+                setCatalog(result.models);
+                setChosen([]);
+                setQuery('');
+                setModelNotice(
+                  result.models.length
+                    ? `已获取 ${result.models.length} 个模型`
+                    : '服务未返回可用模型，可手动填写',
+                );
+              } catch (e) {
+                if (latestConfiguration.current === configuration) setError((e as Error).message);
+              } finally {
+                setDiscovering(false);
+              }
+            }}
+          >
+            {discovering ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
+            {discovering ? '获取中…' : '获取可用模型'}
+          </button>
+          <button
+            type="button"
             className="text-button"
             onClick={() => setModels([...models, { id: '', name: '', tools: true }])}
           >
@@ -234,6 +286,65 @@ function ConnectionEditor({
             添加
           </button>
         </div>
+        {modelNotice && (
+          <p className="hint" role="status">
+            {modelNotice}
+          </p>
+        )}
+        {catalog !== null && catalog.length > 0 && (
+          <section className="model-catalog" aria-label="上游可用模型">
+            <input
+              aria-label="搜索可用模型"
+              placeholder="搜索模型名称"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <div className="model-catalog-list">
+              {catalog
+                .filter((id) => id.toLowerCase().includes(query.trim().toLowerCase()))
+                .map((id) => {
+                  const added = models.some((m) => m.id.trim() === id);
+                  return (
+                    <label className="check-label" key={id}>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择模型 ${id}`}
+                        checked={added || chosen.includes(id)}
+                        disabled={added}
+                        onChange={(e) =>
+                          setChosen(
+                            e.target.checked ? [...chosen, id] : chosen.filter((x) => x !== id),
+                          )
+                        }
+                      />
+                      <span>{id}</span>
+                      {added && <small>已添加</small>}
+                    </label>
+                  );
+                })}
+              {!catalog.some((id) => id.toLowerCase().includes(query.trim().toLowerCase())) && (
+                <p className="hint">没有匹配的模型</p>
+              )}
+            </div>
+            <button
+              type="button"
+              className="secondary"
+              disabled={
+                !chosen.length || models.filter((m) => m.id.trim()).length + chosen.length > 100
+              }
+              onClick={() => {
+                const existing = models.filter((m) => m.id.trim());
+                const ids = chosen.filter((id) => !existing.some((m) => m.id.trim() === id));
+                setModels([...existing, ...ids.map((id) => ({ id, name: id, tools: false }))]);
+                setChosen([]);
+                setModelNotice(`已添加 ${ids.length} 个模型，保存连接后生效`);
+              }}
+            >
+              添加所选模型{chosen.length ? ` · ${chosen.length}` : ''}
+            </button>
+            <p className="hint">最多保存 100 个模型。工具调用需按模型实际能力开启。</p>
+          </section>
+        )}
         {models.map((m, i) => (
           <div className="model-row" key={i}>
             <input
@@ -277,7 +388,7 @@ function ConnectionEditor({
             )}
           </div>
         ))}
-        <p className="hint">填写服务商提供的模型 ID。工具调用能力需与模型匹配。</p>
+        <p className="hint">从上游选择模型，或手动填写模型 ID。保存前可调整显示名称和工具能力。</p>
         {error && (
           <p role="alert" className="error">
             {error}
@@ -768,9 +879,16 @@ export default function App() {
     [notice, setNotice] = useState(''),
     [modal, setModal] = useState<Modal>(null),
     [preview, setPreview] = useState<FileRecord | null>(null),
+    [workspacePreview, setWorkspacePreview] = useState<{
+      name: string;
+      content: string;
+      changed: boolean;
+    } | null>(null),
     [sending, setSending] = useState(false),
     [uploading, setUploading] = useState(false),
+    [showLatest, setShowLatest] = useState(false),
     [sidebar, setSidebar] = useState(false),
+    [compact, setCompact] = useState(() => window.matchMedia('(max-width: 600px)').matches),
     [filter, setFilter] = useState('all'),
     [taskDetails, setTaskDetails] = useState<
       Record<
@@ -783,7 +901,10 @@ export default function App() {
     [theme, setTheme] = useState(() => localStorage.getItem('em-theme') || 'system');
   const input = useRef<HTMLInputElement>(null),
     end = useRef<HTMLDivElement>(null),
+    feed = useRef<HTMLDivElement>(null),
+    followLatest = useRef(true),
     draftRef = useRef<HTMLTextAreaElement>(null),
+    navRef = useRef<HTMLElement>(null),
     currentId = useRef(conversationId);
   currentId.current = conversationId;
   const showError = (e: unknown) => setError(e instanceof Error ? e.message : String(e));
@@ -803,6 +924,49 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('em-theme', theme);
   }, [theme]);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 600px)');
+    const update = () => {
+      setCompact(media.matches);
+      if (!media.matches) setSidebar(false);
+    };
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    if (!compact || !sidebar) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const buttons = () =>
+      Array.from(
+        navRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [],
+      );
+    buttons()[0]?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setSidebar(false);
+      } else if (event.key === 'Tab') {
+        const items = buttons();
+        const first = items[0],
+          last = items.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = overflow;
+      document.removeEventListener('keydown', onKey);
+      previous?.focus({ preventScroll: true });
+    };
+  }, [compact, sidebar]);
   useEffect(() => {
     const choices = data.connections.flatMap((c) => c.models.map((m) => modelKey(c.id, m.id)));
     if (!choices.includes(model))
@@ -865,9 +1029,22 @@ export default function App() {
     };
   }, [page, data.tasks]);
   useEffect(() => {
-    if (thread?.messages.length && page === 'chat')
-      end.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [thread?.messages.length, page]);
+    followLatest.current = true;
+    setShowLatest(false);
+  }, [conversationId, page]);
+  useEffect(() => {
+    const area = feed.current;
+    if (page === 'chat' && area && followLatest.current) area.scrollTop = area.scrollHeight;
+  }, [thread, page]);
+  useEffect(() => {
+    const area = feed.current;
+    if (page !== 'chat' || !area) return;
+    const observer = new ResizeObserver(() => {
+      if (followLatest.current) area.scrollTop = area.scrollHeight;
+    });
+    observer.observe(area);
+    return () => observer.disconnect();
+  }, [page, loaded]);
   useEffect(() => {
     if (notice) {
       const t = setTimeout(() => setNotice(''), 5000);
@@ -970,6 +1147,8 @@ export default function App() {
         fileIds: override?.fileIds ?? attached,
         web,
       });
+      followLatest.current = true;
+      setShowLatest(false);
       setDraft('');
       setAttached([]);
       setThread(await api<Thread>('/conversations/' + id));
@@ -1032,7 +1211,7 @@ export default function App() {
     if (!editor) return;
     const fit = () => {
       editor.style.height = 'auto';
-      editor.style.height = Math.min(264, Math.max(96, editor.scrollHeight)) + 'px';
+      editor.style.height = Math.min(264, Math.max(36, editor.scrollHeight)) + 'px';
     };
     fit();
     window.addEventListener('resize', fit);
@@ -1045,10 +1224,10 @@ export default function App() {
           className="composer-input"
           ref={draftRef}
           aria-label="发送消息"
-          placeholder={waiting ? '你可以在任务完成后继续追问' : '有什么我可以帮你完成？'}
+          placeholder={waiting ? '你可以在任务完成后继续追问' : '写下你的问题，或还没成形的想法…'}
           value={draft}
           maxLength={16000}
-          rows={3}
+          rows={1}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1141,8 +1320,19 @@ export default function App() {
     </div>
   );
   return (
-    <div className="app-shell">
-      <aside className={'sidebar ' + (sidebar ? 'is-open' : '')}>
+    <div
+      className={
+        'app-shell' +
+        (page === 'chat' ? ' is-chat' : '') +
+        (page === 'chat' && !thread?.messages.length ? ' is-welcome' : '')
+      }
+    >
+      <aside
+        ref={navRef}
+        className={'sidebar ' + (sidebar ? 'is-open' : '')}
+        inert={compact && !sidebar}
+        aria-hidden={compact && !sidebar ? true : undefined}
+      >
         <div className="brand">
           <Logo />
           ExpertMesh
@@ -1158,7 +1348,8 @@ export default function App() {
           <Plus size={19} strokeWidth={2} />
           新对话
         </button>
-        <nav>
+        <p className="nav-label">工作手记</p>
+        <nav aria-label="工作空间导航">
           {(
             [
               { id: 'tasks', name: '任务', icon: ListChecks },
@@ -1170,6 +1361,7 @@ export default function App() {
             <button
               key={n.id}
               className={page === n.id ? 'active' : ''}
+              aria-current={page === n.id ? 'page' : undefined}
               onClick={() => navigate(n.id)}
             >
               <n.icon size={17} />
@@ -1211,13 +1403,22 @@ export default function App() {
             <Settings size={17} />
             设置
           </button>
-          <span className="version">开源 Agent · v0.1</span>
+          <div className="workspace-signature">
+            <span className="workspace-monogram" aria-hidden="true">
+              E
+            </span>
+            <div>
+              <span>个人空间</span>
+              <small>让想法，慢慢成形。</small>
+            </div>
+          </div>
+          <span className="version">ExpertMesh · 开源 Agent</span>
         </div>
       </aside>
       {sidebar && (
         <button className="sidebar-scrim" aria-label="收起导航" onClick={() => setSidebar(false)} />
       )}
-      <main>
+      <main inert={compact && sidebar}>
         <header className="topbar">
           <button
             className="mobile-menu icon-button"
@@ -1237,7 +1438,10 @@ export default function App() {
                   settings: '设置',
                 }[page]}
           </span>
-          <span className="space-name">{project?.name || '个人空间'}</span>
+          <span className="space-name">
+            <BookOpen size={14} />
+            {project?.name || '个人空间'}
+          </span>
           {page === 'chat' && projectId && (
             <button className="text-button leave-project" onClick={() => newChat('', 'general')}>
               返回个人空间
@@ -1258,7 +1462,18 @@ export default function App() {
             {notice}
           </div>
         )}
-        <div className={'content ' + (page === 'chat' ? 'chat-content' : '')}>
+        <div
+          key={page}
+          className={'content ' + (page === 'chat' ? 'chat-content' : '')}
+          ref={feed}
+          onScroll={(event) => {
+            if (page !== 'chat') return;
+            const area = event.currentTarget;
+            const near = area.scrollHeight - area.scrollTop - area.clientHeight < 80;
+            followLatest.current = near;
+            setShowLatest(!near);
+          }}
+        >
           {!loaded ? (
             <div className="empty-state">
               <LoaderCircle className="spin" size={24} />
@@ -1270,11 +1485,51 @@ export default function App() {
               {page === 'chat' &&
                 (!thread?.messages.length ? (
                   <div className="welcome">
-                    <Logo className="welcome-mark" />
-                    <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                    <div className="welcome-heading">
+                      <Logo className="welcome-mark" />
+                      <p className="book-eyebrow">留一页空白，给新的想法</p>
+                    </div>
                     <h1>今天，我们一起完成什么？</h1>
                     <p className="welcome-intro">从一个问题、一份资料，或一个新的想法开始。</p>
                     {composer}
+                    <div className="starter-notes" aria-label="灵感起点">
+                      {[
+                        {
+                          icon: BookOpen,
+                          title: '读一份资料',
+                          note: '梳理脉络，找到值得记下的观点',
+                          prompt:
+                            '请帮我阅读并整理这份资料，提炼主要观点与值得进一步思考的问题：\n',
+                        },
+                        {
+                          icon: SquarePen,
+                          title: '写一段文字',
+                          note: '把零散的想法，写成完整的表达',
+                          prompt: '请帮我把这些零散的想法整理成一段清晰、自然的文字：\n',
+                        },
+                        {
+                          icon: Sparkles,
+                          title: '理一个思路',
+                          note: '换个角度，让问题慢慢清晰',
+                          prompt: '我想和你一起梳理这个问题，先分析背景，再讨论可行的方向：\n',
+                        },
+                      ].map((item) => (
+                        <button
+                          key={item.title}
+                          className="starter-note"
+                          onClick={() => {
+                            setDraft(item.prompt);
+                            draftRef.current?.focus();
+                          }}
+                        >
+                          <item.icon size={18} strokeWidth={1.5} />
+                          <strong>{item.title}</strong>
+                          <span>{item.note}</span>
+                          <ArrowUpRight className="note-arrow" size={15} />
+                        </button>
+                      ))}
+                    </div>
+                    <p className="welcome-footnote">思考有自己的节奏。我们从这里开始。</p>
                   </div>
                 ) : (
                   <div className="thread">
@@ -1311,7 +1566,15 @@ export default function App() {
                         <article id={'message-' + m.id} key={m.id} className={'message ' + m.role}>
                           {m.role === 'user' ? (
                             <>
-                              <div className="message-author">你</div>
+                              <div className="message-author">
+                                <span className="message-role">你</span>
+                                <time dateTime={m.createdAt}>
+                                  {new Date(m.createdAt).toLocaleTimeString('zh-CN', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </time>
+                              </div>
                               <div className="user-bubble">{m.content}</div>
                               <div className="user-actions">
                                 <button
@@ -1359,6 +1622,12 @@ export default function App() {
                                 {data.assistants.find(
                                   (a) => a.id === thread.conversation.assistantId,
                                 )?.name || 'ExpertMesh'}
+                                <time dateTime={m.createdAt}>
+                                  {new Date(m.createdAt).toLocaleTimeString('zh-CN', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </time>
                               </div>
                               {m.content ? (
                                 <Markdown text={m.content} />
@@ -1524,14 +1793,13 @@ export default function App() {
                       ))}
                     </div>
                     <div ref={end} />
-                    {composer}
                   </div>
                 ))}
               {page === 'tasks' && (
                 <div className="page-inner">
                   <div className="page-heading">
                     <div className="page-title">
-                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <p className="book-eyebrow">工作手记 · 01 / PROGRESS</p>
                       <h1>任务</h1>
                       <p className="page-intro">跟进正在进行的工作，回看每一次交付。</p>
                     </div>
@@ -1596,7 +1864,7 @@ export default function App() {
                 <div className="page-inner">
                   <div className="page-heading">
                     <div className="page-title">
-                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <p className="book-eyebrow">工作手记 · 02 / COLLECTIONS</p>
                       <h1>项目</h1>
                       <p className="page-intro">把背景、资料与相关对话，整理在同一处。</p>
                     </div>
@@ -1665,7 +1933,7 @@ export default function App() {
                 <div className="page-inner">
                   <div className="page-heading">
                     <div className="page-title">
-                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <p className="book-eyebrow">工作手记 · 03 / COMPANIONS</p>
                       <h1>你的助手</h1>
                       <p className="page-intro">为不同的工作，选择合适的同行者。</p>
                     </div>
@@ -1674,7 +1942,7 @@ export default function App() {
                       创建助手
                     </button>
                   </div>
-                  <div className="cards-grid">
+                  <div className="cards-grid assistant-grid">
                     {data.assistants.map((a) => (
                       <section className="assistant-card" key={a.id}>
                         <div className="assistant-avatar">{a.name.slice(0, 1)}</div>
@@ -1714,7 +1982,7 @@ export default function App() {
                 <div className="page-inner">
                   <div className="page-heading">
                     <div className="page-title">
-                      <p className="book-eyebrow">EXPERTMESH · 你的工作空间</p>
+                      <p className="book-eyebrow">工作手记 · 04 / LIBRARY</p>
                       <h1>文件</h1>
                       <p className="page-intro">收集研究资料，保存写作与协作的成果。</p>
                     </div>
@@ -1914,12 +2182,15 @@ export default function App() {
                       </div>
                       <div className="setting-row">
                         <span>代码执行</span>
-                        <span className="hint">尚未接入</span>
+                        <span className="hint">在执行与工作区中配置</span>
                       </div>
                     </section>
                   </SettingsChapter>
                   <SettingsChapter id="search">
                     <SearchSettingsPanel value={data.search} onSave={refresh} onError={showError} />
+                  </SettingsChapter>
+                  <SettingsChapter id="execution">
+                    <ExecutionSettings assistants={data.assistants} projects={data.projects} />
                   </SettingsChapter>
                   <SettingsChapter id="appearance">
                     <section className="settings-section">
@@ -1951,6 +2222,24 @@ export default function App() {
             </>
           )}
         </div>
+        {page === 'chat' && loaded && !!thread?.messages.length && (
+          <footer className="chat-dock">
+            {showLatest && (
+              <button
+                className="jump-latest"
+                onClick={() => {
+                  followLatest.current = true;
+                  setShowLatest(false);
+                  if (feed.current) feed.current.scrollTop = feed.current.scrollHeight;
+                }}
+              >
+                <ChevronDown size={15} />
+                回到最新
+              </button>
+            )}
+            {composer}
+          </footer>
+        )}
       </main>
       <input
         ref={input}
@@ -1986,6 +2275,16 @@ export default function App() {
               setModal(null);
               if (source.type === 'file') {
                 await openFile(source.id);
+              } else if (source.type === 'workspace') {
+                const split = source.id.indexOf(':');
+                const file = await api<{ content: string; hash: string }>(
+                  `/workspaces/${encodeURIComponent(source.id.slice(0, split))}/read?path=${encodeURIComponent(source.id.slice(split + 1))}&assistantId=${encodeURIComponent(modal.value?.id || 'general')}&projectId=${encodeURIComponent(projectId)}`,
+                );
+                setWorkspacePreview({
+                  name: source.title,
+                  content: file.content,
+                  changed: file.hash !== source.hash,
+                });
               } else if (source.conversationId) {
                 await openChat(source.conversationId);
                 setTimeout(
@@ -2036,6 +2335,18 @@ export default function App() {
             >
               确认删除
             </button>
+          </div>
+        </Dialog>
+      )}
+      {workspacePreview && (
+        <Dialog title={workspacePreview.name} onClose={() => setWorkspacePreview(null)}>
+          <p className="hint">
+            {workspacePreview.changed
+              ? '当前文件已变化，记忆保存的摘录与版本仍保留在来源记录中。'
+              : '当前工作区原文 · 只读'}
+          </p>
+          <div className="file-preview">
+            <pre>{workspacePreview.content}</pre>
           </div>
         </Dialog>
       )}

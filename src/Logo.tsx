@@ -3,15 +3,15 @@ export function Logo({ className = '' }: { className?: string }) {
   return (
     <svg className={`mesh-logo ${className}`} viewBox="0 0 40 40" fill="none" aria-hidden="true">
       <path
-        d="M8 30V10L20 22L32 10V30"
+        d="M8 30V11L20 23L32 11V30"
         stroke="currentColor"
-        strokeWidth="4"
+        strokeWidth="2.8"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <rect x="4" y="6" width="8" height="8" rx="2.5" fill="currentColor" />
-      <rect x="16" y="18" width="8" height="8" rx="2.5" fill="currentColor" />
-      <rect x="28" y="6" width="8" height="8" rx="2.5" fill="currentColor" />
+      <circle cx="8" cy="10" r="3" fill="currentColor" />
+      <circle cx="20" cy="23" r="3" fill="currentColor" />
+      <circle cx="32" cy="10" r="3" fill="currentColor" />
     </svg>
   );
 }

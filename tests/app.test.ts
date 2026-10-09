@@ -74,6 +74,25 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
     const discovered = await send('/connections/' + connection.id + '/test', {});
     assert.equal(discovered.status, 200, JSON.stringify(discovered.value));
     assert.deepEqual(discovered.value.models, ['fixture-model', 'fixture-text']);
+    const previewInput = { provider: 'compatible', baseUrl: mock.url, allowLocal: true };
+    const preview = await send('/connections/discover', { ...previewInput, apiKey: 'preview-key' });
+    assert.equal(preview.status, 200);
+    assert.deepEqual(preview.value.models, ['fixture-model', 'fixture-text']);
+    assert.equal(store.all('connections').length, 1);
+    assert.ok(!JSON.stringify(preview.value).includes('preview-key'));
+    const savedPreview = await send('/connections/discover', {
+      ...previewInput,
+      connectionId: connection.id,
+    });
+    assert.equal(savedPreview.status, 200);
+    const changedEndpoint = await send('/connections/discover', {
+      ...previewInput,
+      baseUrl: mock.url + '/other',
+      connectionId: connection.id,
+    });
+    assert.equal(changedEndpoint.status, 400);
+    assert.match(changedEndpoint.value.error, /重新填写/);
+    assert.equal((await send('/connections/discover', previewInput)).status, 400);
     const dnsResponse = await secureFetch(
       mock.url.replace('127.0.0.1', 'localhost') + '/models',
       {},
@@ -257,6 +276,9 @@ test('full API: credentials, project isolation, agent collaboration, recovery an
     );
     const execution = (await send('/tasks/' + delegated.id)).value.records as ExecutionRecord[];
     assert.ok(execution.some((r) => r.taskId === children[0].id && r.kind === 'model'));
+    const sharedBudget = store.get<TaskRow>('tasks', delegated.id)!.budget!;
+    assert.equal(sharedBudget.modelCalls, execution.filter((r) => r.kind === 'model').length);
+    assert.equal(children[0].budget, undefined);
     assert.ok(execution.some((r) => r.name === 'review_task' && r.status === 'succeeded'));
     assert.ok(
       execution.every(

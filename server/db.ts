@@ -23,6 +23,10 @@ const tables = [
   'records',
   'tool_connections',
   'tool_grants',
+  'budgets',
+  'workspaces',
+  'workspace_grants',
+  'sandbox_runs',
 ] as const;
 export type Table = (typeof tables)[number];
 export class Store {
@@ -56,7 +60,7 @@ export class Store {
         'coder',
         '编程助手',
         '实现功能，分析代码问题',
-        '你负责代码分析和实现建议。只能读取上传的文件并生成产物，不能执行代码或声称已经运行测试。',
+        '你负责代码分析和实现。只读取获准的资料，通过 run_code 在已启用的沙箱内执行代码；仅根据真实执行记录报告测试结果，不得声称修改了用户仓库。',
       ],
     ])
       if (!this.get('assistants', id))
@@ -69,6 +73,16 @@ export class Store {
           tools: true,
           createdAt: now(),
         });
+    const coder = this.get<Row>('assistants', 'coder');
+    if (
+      coder?.instructions ===
+      '你负责代码分析和实现建议。只能读取上传的文件并生成产物，不能执行代码或声称已经运行测试。'
+    )
+      this.put('assistants', {
+        ...coder,
+        instructions:
+          '你负责代码分析和实现。只读取获准的资料，通过 run_code 在已启用的沙箱内执行代码；仅根据真实执行记录报告测试结果，不得声称修改了用户仓库。',
+      });
   }
   get<T = Row>(table: Table, id: string): T | undefined {
     const row = this.db.prepare(`SELECT data FROM ${table} WHERE id=?`).get(id) as
