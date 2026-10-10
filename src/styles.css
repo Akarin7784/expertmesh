@@ -491,6 +491,28 @@ html[data-desktop='true'] *::-webkit-scrollbar {
   min-height: 0;
   overflow: hidden;
 }
+.app-shell.is-desktop::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 8px;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+html[data-window-focused='false'] .app-shell.is-desktop::after {
+  opacity: 0.45;
+}
+html[data-window-state='maximized'] .app-shell.is-desktop::after,
+html[data-window-state='fullscreen'] .app-shell.is-desktop::after {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell.is-desktop::after {
+    transition: none;
+  }
+}
 .is-desktop > main {
   height: 100%;
   min-height: 0;

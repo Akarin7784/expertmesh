@@ -1,1 +1,1 @@
-export type DesktopWindowState = { maximized: boolean; fullscreen: boolean };
+export type DesktopWindowState = { maximized: boolean; fullscreen: boolean; focused: boolean };

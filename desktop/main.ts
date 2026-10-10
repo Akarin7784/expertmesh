@@ -22,6 +22,7 @@ if (process.env.EXPERTMESH_DESKTOP_USER_DATA_DIR) {
 }
 const singleInstance = app.requestSingleInstanceLock();
 let window: BrowserWindow | undefined;
+const windowStates = new WeakMap<BrowserWindow, DesktopWindowState>();
 let backend: UtilityProcess | undefined;
 let origin = '';
 let quitting = false;
@@ -88,7 +89,10 @@ async function createWindow() {
     minHeight: 540,
     show: false,
     frame: false,
-    thickFrame: false,
+    thickFrame: true,
+    hasShadow: true,
+    roundedCorners: true,
+    accentColor: false,
     autoHideMenuBar: true,
     backgroundColor: '#f8f5ef',
     title: 'ExpertMesh · 工作手记',
@@ -104,15 +108,23 @@ async function createWindow() {
   });
   const current = window;
   current.setMenuBarVisibility(false);
-  const sendWindowState = () => {
-    if (!current.isDestroyed())
-      current.webContents.send('desktop:window-state', windowState(current));
+  windowStates.set(current, {
+    maximized: current.isMaximized(),
+    fullscreen: current.isFullScreen(),
+    focused: current.isFocused(),
+  });
+  const sendWindowState = (change: Partial<DesktopWindowState> = {}) => {
+    if (current.isDestroyed()) return;
+    const state = Object.assign(windowState(current), change);
+    current.webContents.send('desktop:window-state', state);
   };
-  current.on('maximize', sendWindowState);
-  current.on('unmaximize', sendWindowState);
-  current.on('enter-full-screen', sendWindowState);
-  current.on('leave-full-screen', sendWindowState);
-  current.webContents.on('did-finish-load', sendWindowState);
+  current.on('maximize', () => sendWindowState({ maximized: true }));
+  current.on('unmaximize', () => sendWindowState({ maximized: false }));
+  current.on('enter-full-screen', () => sendWindowState({ fullscreen: true }));
+  current.on('leave-full-screen', () => sendWindowState({ fullscreen: false }));
+  current.on('focus', () => sendWindowState({ focused: true }));
+  current.on('blur', () => sendWindowState({ focused: false }));
+  current.webContents.on('did-finish-load', () => sendWindowState());
   const openLink = (raw: string) => {
     const url = externalUrl(raw);
     if (url && !isAppUrl(url, origin)) void shell.openExternal(url).catch(() => {});
@@ -138,7 +150,7 @@ async function createWindow() {
 }
 
 function windowState(current: BrowserWindow): DesktopWindowState {
-  return { maximized: current.isMaximized(), fullscreen: current.isFullScreen() };
+  return windowStates.get(current)!;
 }
 
 function trustedWindow(event: IpcMainInvokeEvent) {

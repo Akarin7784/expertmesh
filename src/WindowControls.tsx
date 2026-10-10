@@ -4,24 +4,48 @@ import type { DesktopWindowState } from '../shared/desktop';
 
 export function WindowControls() {
   const desktop = window.expertmeshDesktop;
-  const [state, setState] = useState<DesktopWindowState>({ maximized: false, fullscreen: false });
+  const [state, setState] = useState<DesktopWindowState>({
+    maximized: false,
+    fullscreen: false,
+    focused: true,
+  });
   const [error, setError] = useState('');
   useEffect(() => {
     if (!desktop) return;
     let active = true;
+    let receivedEvent = false;
     const update = (value: DesktopWindowState) => {
       if (active) setState(value);
     };
-    const unsubscribe = desktop.onWindowState(update);
+    const unsubscribe = desktop.onWindowState((value) => {
+      receivedEvent = true;
+      update(value);
+    });
     desktop
       .getWindowState()
-      .then(update)
+      .then((value) => {
+        if (!receivedEvent) update(value);
+      })
       .catch(() => {});
     return () => {
       active = false;
       unsubscribe();
     };
   }, [desktop]);
+  useEffect(() => {
+    if (!desktop) return;
+    const root = document.documentElement;
+    root.dataset.windowState = state.fullscreen
+      ? 'fullscreen'
+      : state.maximized
+        ? 'maximized'
+        : 'normal';
+    root.dataset.windowFocused = String(state.focused);
+    return () => {
+      delete root.dataset.windowState;
+      delete root.dataset.windowFocused;
+    };
+  }, [desktop, state]);
   if (!desktop) return null;
   const restored = state.maximized || state.fullscreen;
   const act = async (action: () => Promise<void>) => {

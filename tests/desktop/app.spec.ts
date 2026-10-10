@@ -62,8 +62,35 @@ test('desktop runs its bundled backend, native directory picker, downloads and p
       });
     await page.getByRole('button', { name: '最大化窗口', exact: true }).click();
     await expect.poll(async () => (await windowStatus()).maximized).toBe(true);
+    await expect(page.locator('html')).toHaveAttribute('data-window-state', 'maximized');
+    await expect
+      .poll(() =>
+        page
+          .locator('.app-shell')
+          .evaluate((element) => getComputedStyle(element, '::after').opacity),
+      )
+      .toBe('0');
     await page.getByRole('button', { name: '还原窗口', exact: true }).click();
     await expect.poll(async () => (await windowStatus()).maximized).toBe(false);
+    await expect(page.locator('html')).toHaveAttribute('data-window-state', 'normal');
+    // OS focus transfer is unreliable under automation; exercise main-process events explicitly.
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('blur'));
+    await expect(page.locator('html')).toHaveAttribute('data-window-focused', 'false');
+    await expect
+      .poll(() =>
+        page
+          .locator('.app-shell')
+          .evaluate((element) => getComputedStyle(element, '::after').opacity),
+      )
+      .toBe('0.45');
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].emit('focus'));
+    await expect(page.locator('html')).toHaveAttribute('data-window-focused', 'true');
+    expect(
+      await desktop.evaluate(({ BrowserWindow }) => {
+        const current = BrowserWindow.getAllWindows()[0];
+        return { shadow: current.hasShadow(), resizable: current.isResizable() };
+      }),
+    ).toEqual({ shadow: true, resizable: true });
     await page.getByRole('button', { name: '最小化窗口', exact: true }).click();
     await expect.poll(async () => (await windowStatus()).minimized).toBe(true);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
