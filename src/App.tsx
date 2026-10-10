@@ -1325,6 +1325,7 @@ export default function App() {
       className={
         'app-shell' +
         (window.expertmeshDesktop ? ' is-desktop' : '') +
+        (page === 'settings' ? ' is-settings' : '') +
         (page === 'chat' ? ' is-chat' : '') +
         (page === 'chat' && !thread?.messages.length ? ' is-welcome' : '')
       }
@@ -1469,7 +1470,7 @@ export default function App() {
           key={page}
           className={'content ' + (page === 'chat' ? 'chat-content' : '')}
           ref={feed}
-          tabIndex={window.expertmeshDesktop ? 0 : undefined}
+          tabIndex={window.expertmeshDesktop && page !== 'settings' ? 0 : undefined}
           onScroll={(event) => {
             if (page !== 'chat') return;
             const area = event.currentTarget;

@@ -1,4 +1,4 @@
-import { Children, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
 const chapters = [
   { id: 'models', title: '模型与服务商', note: '选择与你一起工作的模型。' },
@@ -16,6 +16,10 @@ export function SettingsChapter({ children }: { id: ChapterId; children: ReactNo
 
 export function SettingsBook({ children }: { children: ReactNode }) {
   const [active, setActive] = useState<ChapterId>('models');
+  const pages = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (pages.current) pages.current.scrollTop = 0;
+  }, [active]);
   return (
     <div className="page-inner settings-page settings-book">
       <header className="book-heading">
@@ -62,7 +66,7 @@ export function SettingsBook({ children }: { children: ReactNode }) {
             ))}
           </div>
         </nav>
-        <div className="book-pages">
+        <div className="book-pages" ref={pages}>
           {Children.map(children, (child) => {
             const element = child as ReactElement<{ id: ChapterId }>;
             const chapter = chapters.find((c) => c.id === element.props.id)!;

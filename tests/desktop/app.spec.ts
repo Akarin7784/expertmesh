@@ -116,6 +116,48 @@ test('desktop runs its bundled backend, native directory picker, downloads and p
     }
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
+    const pages = page.locator('.book-pages');
+    const index = page.getByRole('navigation', { name: '设置目录' });
+    for (const [width, height] of [
+      [1320, 900],
+      [1100, 650],
+      [720, 540],
+    ]) {
+      await desktop.evaluate(
+        ({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size[0], size[1]),
+        [width, height],
+      );
+      await expect(pages).toHaveCSS('overflow-y', 'auto');
+      await expect(pages).toHaveCSS('scrollbar-width', 'none');
+      const before = await index.boundingBox();
+      await pages.hover();
+      await page.mouse.wheel(0, 700);
+      await expect.poll(() => pages.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      expect(await page.locator('.content').evaluate((element) => element.scrollTop)).toBe(0);
+      expect((await index.boundingBox())!.y).toBeCloseTo(before!.y, 1);
+      expect(await index.evaluate((element) => element.scrollTop)).toBe(0);
+      const chapterPosition = await pages.evaluate((element) => element.scrollTop);
+      await index.hover();
+      await page.mouse.wheel(0, 700);
+      expect(await pages.evaluate((element) => element.scrollTop)).toBe(chapterPosition);
+      await page.getByRole('tab', { name: '阅读与外观', exact: true }).click();
+      await expect.poll(() => pages.evaluate((element) => element.scrollTop)).toBe(0);
+      await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
+      await page.getByLabel('模型调用次数', { exact: true }).fill('7');
+      await page.getByRole('tab', { name: '工具与权限', exact: true }).click();
+      await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
+      await expect(page.getByLabel('模型调用次数', { exact: true })).toHaveValue('7');
+    }
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(1320, 900),
+    );
+    await pages.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => pages.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await page.screenshot({ path: 'test-results/desktop-settings-independent-scroll.png' });
+    await pages.evaluate((element) => {
+      element.scrollTop = 0;
+    });
     await expect(page.getByRole('button', { name: '选择目录', exact: true })).toBeVisible();
     // Stub only the OS dialog response; the button, preload bridge and validated IPC are real.
     await desktop.evaluate(({ dialog }, path) => {

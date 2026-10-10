@@ -1579,6 +1579,82 @@ details[open] > :not(summary) {
 .book-page h2 {
   font-size: 24px;
 }
+/* The settings index and chapter keep their own reading position. */
+.app-shell.is-settings {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.is-settings > main {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.is-settings .topbar,
+.is-settings main > .notice {
+  flex-shrink: 0;
+}
+.is-settings .content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.is-settings .settings-book {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding-bottom: 0;
+}
+.is-settings .book-heading {
+  flex-shrink: 0;
+}
+.is-settings .book-layout {
+  flex: 1;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+.is-settings .book-index,
+.is-settings .book-pages {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 24px;
+}
+@media (max-width: 850px) {
+  .is-settings .book-layout {
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 16px;
+  }
+  .is-settings .book-index {
+    max-height: 165px;
+    padding-bottom: 0;
+  }
+  .is-settings .book-index-label {
+    display: none;
+  }
+  .is-settings .book-index [role='tablist'] {
+    margin-top: 0;
+  }
+}
+@media (max-height: 650px) {
+  .is-settings .book-heading {
+    padding-top: 0;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+  }
+  .is-settings .book-heading h1 {
+    font-size: 30px;
+    margin-block: 6px;
+  }
+  .is-settings .book-heading > p:last-child {
+    font-size: 13px;
+    line-height: 1.6;
+  }
+}
 .search-settings form {
   display: grid;
   gap: 14px;
