@@ -17,6 +17,7 @@ test('desktop runs its bundled backend, native directory picker, downloads and p
       ),
     );
     env.EXPERTMESH_DESKTOP_DATA_DIR = dataDir;
+    env.EXPERTMESH_DESKTOP_USER_DATA_DIR = resolve(dir, 'profile');
     delete env.ELECTRON_RUN_AS_NODE;
     const executablePath = process.env.EXPERTMESH_DESKTOP_EXECUTABLE;
     return electron.launch({
@@ -52,6 +53,67 @@ test('desktop runs its bundled backend, native directory picker, downloads and p
         };
       }),
     ).toEqual({ sandbox: true, contextIsolation: true, nodeIntegration: false });
+    if (process.platform !== 'darwin')
+      expect(await desktop.evaluate(({ Menu }) => Menu.getApplicationMenu())).toBe(null);
+    const windowStatus = () =>
+      desktop!.evaluate(({ BrowserWindow }) => {
+        const current = BrowserWindow.getAllWindows()[0];
+        return { maximized: current.isMaximized(), minimized: current.isMinimized() };
+      });
+    await page.getByRole('button', { name: '最大化窗口', exact: true }).click();
+    await expect.poll(async () => (await windowStatus()).maximized).toBe(true);
+    await page.getByRole('button', { name: '还原窗口', exact: true }).click();
+    await expect.poll(async () => (await windowStatus()).maximized).toBe(false);
+    await page.getByRole('button', { name: '最小化窗口', exact: true }).click();
+    await expect.poll(async () => (await windowStatus()).minimized).toBe(true);
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+    await expect.poll(async () => (await windowStatus()).minimized).toBe(false);
+    // Window state changes outside the UI must update the restore/maximize icon too.
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].maximize());
+    await expect(page.getByRole('button', { name: '还原窗口', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '还原窗口', exact: true }).click();
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setSize(1100, 650),
+    );
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate((value) => localStorage.setItem('em-theme', value), theme);
+      await page.reload();
+      await page.getByRole('button', { name: '助手', exact: true }).click();
+      await expect(page.getByRole('heading', { name: '你的助手', exact: true })).toBeVisible();
+      const content = page.locator('.content');
+      await expect(content).toHaveCSS('scrollbar-width', 'none');
+      expect(
+        await content.evaluate(
+          (element) => getComputedStyle(element, '::-webkit-scrollbar').display,
+        ),
+      ).toBe('none');
+      await content.hover();
+      await page.mouse.wheel(0, 650);
+      await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      expect(
+        await page.locator('.topbar').evaluate((element) => element.getBoundingClientRect().top),
+      ).toBe(0);
+      expect(
+        await page
+          .locator('.topbar')
+          .evaluate((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+      ).toBe('drag');
+      expect(
+        await page
+          .getByRole('button', { name: '关闭窗口', exact: true })
+          .evaluate((element) => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+      ).toBe('no-drag');
+      await content.evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await content.focus();
+      await content.press('PageDown');
+      await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      await content.press('Home');
+      await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBe(0);
+      await page.getByRole('button', { name: '助手', exact: true }).focus();
+      await page.screenshot({ path: `test-results/desktop-frameless-${theme}.png` });
+    }
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('tab', { name: '执行与工作区', exact: true }).click();
     await expect(page.getByRole('button', { name: '选择目录', exact: true })).toBeVisible();
@@ -94,7 +156,10 @@ test('desktop runs its bundled backend, native directory picker, downloads and p
     expect(JSON.parse(readFileSync(downloadPath, 'utf8')).workspaces[0].name).toBe('桌面验收目录');
     await page.screenshot({ path: 'test-results/desktop-settings.png' });
     expect(errors).toEqual([]);
-    await desktop.close();
+    const closed = desktop.waitForEvent('close');
+    await page.getByRole('button', { name: '关闭窗口', exact: true }).click();
+    if (process.platform === 'darwin') await desktop.close();
+    await closed;
     desktop = undefined;
     await expect
       .poll(async () => {

@@ -8,13 +8,18 @@ import {
   shell,
   utilityProcess,
 } from 'electron';
-import type { UtilityProcess } from 'electron';
+import type { IpcMainInvokeEvent, UtilityProcess } from 'electron';
+import type { DesktopWindowState } from '../shared/desktop';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { externalUrl, isAppUrl } from './policy';
 
 app.setName('ExpertMesh');
+if (process.env.EXPERTMESH_DESKTOP_USER_DATA_DIR) {
+  mkdirSync(process.env.EXPERTMESH_DESKTOP_USER_DATA_DIR, { recursive: true });
+  app.setPath('userData', process.env.EXPERTMESH_DESKTOP_USER_DATA_DIR);
+}
 const singleInstance = app.requestSingleInstanceLock();
 let window: BrowserWindow | undefined;
 let backend: UtilityProcess | undefined;
@@ -82,6 +87,9 @@ async function createWindow() {
     minWidth: 720,
     minHeight: 540,
     show: false,
+    frame: false,
+    thickFrame: false,
+    autoHideMenuBar: true,
     backgroundColor: '#f8f5ef',
     title: 'ExpertMesh · 工作手记',
     webPreferences: {
@@ -95,6 +103,16 @@ async function createWindow() {
     },
   });
   const current = window;
+  current.setMenuBarVisibility(false);
+  const sendWindowState = () => {
+    if (!current.isDestroyed())
+      current.webContents.send('desktop:window-state', windowState(current));
+  };
+  current.on('maximize', sendWindowState);
+  current.on('unmaximize', sendWindowState);
+  current.on('enter-full-screen', sendWindowState);
+  current.on('leave-full-screen', sendWindowState);
+  current.webContents.on('did-finish-load', sendWindowState);
   const openLink = (raw: string) => {
     const url = externalUrl(raw);
     if (url && !isAppUrl(url, origin)) void shell.openExternal(url).catch(() => {});
@@ -117,6 +135,21 @@ async function createWindow() {
   });
   current.once('ready-to-show', () => current.show());
   await current.loadURL(origin);
+}
+
+function windowState(current: BrowserWindow): DesktopWindowState {
+  return { maximized: current.isMaximized(), fullscreen: current.isFullScreen() };
+}
+
+function trustedWindow(event: IpcMainInvokeEvent) {
+  if (
+    !window ||
+    event.sender !== window.webContents ||
+    event.senderFrame !== window.webContents.mainFrame ||
+    !isAppUrl(event.senderFrame.url, origin)
+  )
+    throw Error('请求来源不允许');
+  return window;
 }
 
 async function shutdown() {
@@ -160,18 +193,22 @@ if (!singleInstance) {
     if (!window && origin && backend && !quitting) void createWindow();
   });
   ipcMain.handle('desktop:choose-directory', async (event) => {
-    if (
-      !window ||
-      event.sender !== window.webContents ||
-      event.senderFrame !== window.webContents.mainFrame ||
-      !isAppUrl(event.senderFrame.url, origin)
-    )
-      throw Error('请求来源不允许');
-    const result = await dialog.showOpenDialog(window, {
+    const result = await dialog.showOpenDialog(trustedWindow(event), {
       title: '选择只读工作区',
       properties: ['openDirectory'],
     });
     return result.canceled ? null : result.filePaths[0] || null;
+  });
+  ipcMain.handle('desktop:window-state', (event) => windowState(trustedWindow(event)));
+  ipcMain.handle('desktop:window-action', (event, action: unknown) => {
+    const current = trustedWindow(event);
+    if (action === 'minimize') current.minimize();
+    else if (action === 'toggle-maximize') {
+      if (current.isFullScreen()) current.setFullScreen(false);
+      else if (current.isMaximized()) current.unmaximize();
+      else current.maximize();
+    } else if (action === 'close') current.close();
+    else throw Error('窗口操作不支持');
   });
   void app
     .whenReady()
@@ -180,21 +217,23 @@ if (!singleInstance) {
         process.env.EXPERTMESH_DESKTOP_DATA_DIR || join(app.getPath('userData'), 'data');
       mkdirSync(dataDir, { recursive: true });
       Menu.setApplicationMenu(
-        Menu.buildFromTemplate([
-          ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
-          { role: 'fileMenu' },
-          { role: 'editMenu' },
-          {
-            label: '视图',
-            submenu: [
-              { role: 'reload' },
-              { role: 'resetZoom' },
-              { role: 'zoomIn' },
-              { role: 'zoomOut' },
-              { role: 'togglefullscreen' },
-            ],
-          },
-        ]),
+        process.platform === 'darwin'
+          ? Menu.buildFromTemplate([
+              { role: 'appMenu' },
+              { role: 'fileMenu' },
+              { role: 'editMenu' },
+              {
+                label: '视图',
+                submenu: [
+                  { role: 'reload' },
+                  { role: 'resetZoom' },
+                  { role: 'zoomIn' },
+                  { role: 'zoomOut' },
+                  { role: 'togglefullscreen' },
+                ],
+              },
+            ])
+          : null,
       );
       await startBackend(dataDir);
       await createWindow();

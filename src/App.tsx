@@ -52,6 +52,7 @@ import { MemoryPanel, MemoryCapture } from './MemoryPanel';
 import { Select } from './Select';
 import { ExecutionSettings, BudgetFields } from './ExecutionSettings';
 import { ExecutionDetails } from './ExecutionDetails';
+import { WindowControls } from './WindowControls';
 
 type Page = 'chat' | 'tasks' | 'projects' | 'assistants' | 'files' | 'settings';
 type Modal =
@@ -1323,6 +1324,7 @@ export default function App() {
     <div
       className={
         'app-shell' +
+        (window.expertmeshDesktop ? ' is-desktop' : '') +
         (page === 'chat' ? ' is-chat' : '') +
         (page === 'chat' && !thread?.messages.length ? ' is-welcome' : '')
       }
@@ -1447,6 +1449,7 @@ export default function App() {
               返回个人空间
             </button>
           )}
+          <WindowControls />
         </header>
         {error && (
           <div className="notice error-banner" role="alert">
@@ -1466,6 +1469,7 @@ export default function App() {
           key={page}
           className={'content ' + (page === 'chat' ? 'chat-content' : '')}
           ref={feed}
+          tabIndex={window.expertmeshDesktop ? 0 : undefined}
           onScroll={(event) => {
             if (page !== 'chat') return;
             const area = event.currentTarget;
